@@ -1,0 +1,1383 @@
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import logging.handlers
+import os
+import secrets
+import signal
+import socket
+import sys
+import threading
+import time
+import urllib.error
+import urllib.request
+import webbrowser
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from importlib import resources
+from pathlib import Path
+from typing import Any
+from urllib.parse import parse_qs, urlsplit
+
+from . import __version__
+from .actions import (
+    ActionError,
+    open_local_url,
+    open_project_path,
+    terminate_process_tree,
+    verify_post_stop,
+)
+from .advisor import generate_hardware_advice
+from .config import AppConfig, default_data_dir, load_config, save_config, validate_config
+from .diagnostics import (
+    DiagnosticError,
+    create_snapshot_manifest,
+    inspect_config,
+    inspect_log,
+    list_snapshot_manifests,
+    restore_config_snapshot,
+)
+from .model_planner import ModelPlanner
+from .engine_advisor import compare_service_benchmarks, recommend_engines
+from .impact import build_export_envelope, build_impact_report
+from .log_monitor import LogMonitor, LogMonitorError
+from .model_inventory import ModelInventoryError, add_capacity_hints, scan_model_directory
+from .capacity import QUANTIZATIONS
+from .network_topology import build_network_topology
+from .platforms import platform_info
+from .posture import PostureEvaluator
+from .privacy import atomic_write_private_text, ensure_private_directory, harden_private_file
+from .runtime_probe import RuntimeProbeCollector
+from .scanner import Scanner
+from .project_rules import AttributionRuleError, validate_rule_payload
+from .service_benchmark import ServiceBenchmarkError, run_service_benchmark
+from .service_relationships import build_service_relationships
+from .storage import Storage
+from .telemetry import TelemetryCollector
+from .timeline import TimelineTracker, build_incident_view
+from .trusted_nodes import TrustedNodeCollector
+from .workload_matrix import WorkloadMatrixError, WorkloadMatrixManager
+
+
+LOGGER = logging.getLogger("vsg")
+MAX_BODY = 65536
+MAX_CONTROL_RESPONSE = 1024 * 1024
+
+
+class PrivateRotatingFileHandler(logging.handlers.RotatingFileHandler):
+    def _open(self):  # type: ignore[no-untyped-def]
+        stream = super()._open()
+        harden_private_file(Path(self.baseFilename))
+        return stream
+
+
+def configure_logging(data_dir: Path, verbose: bool = False) -> None:
+    ensure_private_directory(data_dir)
+    LOGGER.setLevel(logging.DEBUG if verbose else logging.INFO)
+    log_path = data_dir / "vsg.log"
+    handler = PrivateRotatingFileHandler(
+        log_path, maxBytes=2_000_000, backupCount=3, encoding="utf-8"
+    )
+    harden_private_file(log_path)
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    LOGGER.handlers.clear()
+    LOGGER.addHandler(handler)
+    if verbose and getattr(sys, "stderr", None):
+        stream = logging.StreamHandler()
+        stream.setFormatter(logging.Formatter("%(levelname)s %(message)s"))
+        LOGGER.addHandler(stream)
+
+
+class Collector:
+    def __init__(self, config: AppConfig, storage: Storage, log_monitor: LogMonitor):
+        self.config = config
+        self.storage = storage
+        self.scanner = Scanner(config, storage)
+        self.telemetry = TelemetryCollector(config)
+        self.runtime_probes = RuntimeProbeCollector()
+        self.posture = PostureEvaluator()
+        self.trusted_nodes = TrustedNodeCollector()
+        self.log_monitor = log_monitor
+        self.timeline = TimelineTracker(storage)
+        self.snapshot: dict[str, Any] = {
+            "schema_version": "1.1",
+            "generated_at": None,
+            "summary": {},
+            "collectors": {},
+            "errors": [],
+            "services": [],
+            "telemetry": {},
+            "runtime_probes": [],
+            "posture": {},
+            "trusted_nodes": {},
+            "log_monitor": {},
+            "network_topology": {},
+            "service_relationships": {},
+            "storage": self.storage.status(),
+            "loading": True,
+        }
+        self._lock = threading.RLock()
+        self._stop = threading.Event()
+        self._refresh = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="vsg-collector", daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> bool:
+        self._stop.set()
+        self._refresh.set()
+        # A Docker/WSL subprocess may already be inside its bounded timeout.
+        # Give that read-only scan time to return, then exit before starting
+        # any later collector stage.
+        self._thread.join(timeout=30)
+        return not self._thread.is_alive()
+
+    def request_refresh(self) -> None:
+        self._refresh.set()
+
+    def update_config(self, config: AppConfig) -> None:
+        with self._lock:
+            self.config = config
+            self.scanner.update_config(config)
+            self.telemetry.update_config(config)
+        self.request_refresh()
+
+    def get_snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            return json.loads(json.dumps(self.snapshot, ensure_ascii=False))
+
+    def find_service(self, service_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            for service in self.snapshot.get("services", []):
+                if service.get("id") == service_id:
+                    return json.loads(json.dumps(service, ensure_ascii=False))
+        return None
+
+    def record_impact_feedback(self, service_id: str, feedback: dict[str, Any]) -> None:
+        with self._lock:
+            for service in self.snapshot.get("services", []):
+                if service.get("id") == service_id:
+                    service["impact_feedback"] = json.loads(
+                        json.dumps(feedback, ensure_ascii=False)
+                    )
+                    return
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                snapshot = self.scanner.scan()
+                if self._stop.is_set():
+                    break
+                services = snapshot.get("services", [])
+                telemetry = self.telemetry.collect(services)
+                if self._stop.is_set():
+                    break
+                snapshot.setdefault("summary", {})["cpu_percent"] = telemetry["cpu"]["percent"]
+                probes = self.runtime_probes.collect(services) if self.config.enable_runtime_probes else []
+                if self._stop.is_set():
+                    break
+                probes_by_id = {item.get("service_id"): item for item in probes}
+                for service in services:
+                    if service.get("id") in probes_by_id:
+                        service["runtime_probe"] = probes_by_id[service.get("id")]
+                snapshot["schema_version"] = "2.0"
+                snapshot["telemetry"] = telemetry
+                snapshot["runtime_probes"] = probes
+                snapshot["log_monitor"] = self.log_monitor.poll(services)
+                snapshot["posture"] = self.posture.evaluate(telemetry, services, probes)
+                snapshot["trusted_nodes"] = self.trusted_nodes.collect(self.config.trusted_nodes)
+                self.timeline.observe(snapshot, telemetry)
+                snapshot["network_topology"] = build_network_topology(services, telemetry)
+                relationships = build_service_relationships(services)
+                for service in services:
+                    service["stop_assessment"] = (relationships.get("assessments") or {}).get(
+                        service.get("id"), {}
+                    )
+                feedbacks = self.storage.impact_feedbacks(
+                    str(service.get("fingerprint") or "") for service in services
+                )
+                for service in services:
+                    feedback = feedbacks.get(str(service.get("fingerprint") or ""))
+                    if feedback:
+                        service["impact_feedback"] = feedback
+                snapshot["service_relationships"] = relationships
+                snapshot["incident_summary"] = build_incident_view(self.storage, 24)
+                snapshot["storage"] = self.storage.status()
+                with self._lock:
+                    self.snapshot = snapshot
+                self.storage.cleanup(self.config.history_days, self.config.log_retention_days)
+            except Exception as exc:  # collector must survive a partial platform failure
+                LOGGER.exception("collector scan failed")
+                with self._lock:
+                    self.snapshot = {
+                        **self.snapshot,
+                        "generated_at": time.time(),
+                        "loading": False,
+                        "errors": [f"采集失败：{type(exc).__name__}"],
+                    }
+            self._refresh.wait(timeout=self.config.refresh_seconds)
+            self._refresh.clear()
+
+
+class AppState:
+    def __init__(self, data_dir: Path, config: AppConfig):
+        self.data_dir = data_dir
+        self.config = config
+        self.storage = Storage(data_dir)
+        self.log_monitor = LogMonitor(self.storage)
+        self.collector = Collector(config, self.storage, self.log_monitor)
+        self.model_planner = ModelPlanner(self.storage)
+        self.workload_matrix = WorkloadMatrixManager(
+            self.storage,
+            self.collector.get_snapshot,
+            self.model_planner.hardware,
+            self.model_planner.predict_workload,
+            lambda: float(self.config.low_disk_free_gib),
+        )
+        self.token = secrets.token_urlsafe(32)
+        self.instance_id = secrets.token_urlsafe(18)
+        self.server: ThreadingHTTPServer | None = None
+        self.started_at = time.time()
+
+    def update_config(self, raw: dict[str, Any]) -> AppConfig:
+        unknown = sorted(set(raw) - set(self.config.public_dict()))
+        if unknown:
+            raise ValueError(f"设置包含未知字段：{', '.join(unknown[:10])}")
+        config = validate_config(raw, self.config)
+        save_config(config, self.data_dir)
+        self.config = config
+        self.collector.update_config(config)
+        self.storage.add_audit("settings.update", "configuration", "success", {"keys": sorted(raw)})
+        return config
+
+    def advisor_payload(self, raw: dict[str, Any] | None = None) -> dict[str, Any]:
+        request = raw or {}
+        snapshot = self.collector.get_snapshot()
+        hardware = self.model_planner.hardware()
+        runtimes = self.model_planner.runtimes()
+        events = self.storage.recent_log_events(100)
+        engine = recommend_engines(hardware, runtimes, request)
+        advice = generate_hardware_advice(
+            hardware,
+            snapshot.get("telemetry") or {},
+            engine["request"],
+            snapshot.get("runtime_probes") or [],
+            events,
+            self.config.low_disk_free_gib,
+        )
+        benchmarks = compare_service_benchmarks(self.storage.recent_service_benchmarks(200))
+        return {
+            "engine": engine,
+            "advice": advice,
+            "log_monitor": self.log_monitor.status(),
+            "benchmarks": benchmarks,
+            "workflow": {
+                "stages": ["detect", "diagnose", "recommend", "benchmark", "monitor", "rollback"],
+                "automatic_changes": False,
+                "network_required": False,
+            },
+        }
+
+    def impact_report(self) -> dict[str, Any]:
+        return build_impact_report(
+            self.storage,
+            self.collector.get_snapshot(),
+            platform_info(),
+            __version__,
+        )
+
+    def close(self) -> None:
+        matrix_stopped = self.workload_matrix.close()
+        collector_stopped = self.collector.stop()
+        if matrix_stopped and collector_stopped:
+            self.storage.close()
+        else:
+            LOGGER.warning(
+                "a background collector or workload request is still exiting; "
+                "leaving SQLite open for process exit"
+            )
+
+
+class VSGServer(ThreadingHTTPServer):
+    daemon_threads = True
+    # A local control plane must never share a listening socket with an older
+    # VSG process.  SO_REUSEADDR on Windows can otherwise let two packaged
+    # versions bind the same host/port and serve a random mix of old/new pages.
+    allow_reuse_address = False
+
+    def __init__(self, address: tuple[str, int], state: AppState):
+        self.state = state
+        super().__init__(address, VSGHandler)
+
+    def server_bind(self) -> None:
+        if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
+class VSGHandler(BaseHTTPRequestHandler):
+    server: VSGServer
+    server_version = "VSG"
+    sys_version = ""
+
+    def setup(self) -> None:
+        super().setup()
+        try:
+            # A local peer must not retain an unbounded request thread by
+            # trickling headers or a request body indefinitely.
+            self.connection.settimeout(10.0)
+        except OSError:
+            pass
+
+    def log_message(self, format_string: str, *args: Any) -> None:
+        LOGGER.debug("http " + format_string, *args)
+
+    @property
+    def state(self) -> AppState:
+        return self.server.state
+
+    def _allowed_hosts(self) -> set[str]:
+        port = self.server.server_address[1]
+        return {f"127.0.0.1:{port}", f"localhost:{port}"}
+
+    def _request_is_local(self) -> bool:
+        host = self.headers.get("Host", "").lower()
+        if host not in self._allowed_hosts():
+            return False
+        origin = self.headers.get("Origin")
+        if origin:
+            allowed_origins = {f"http://{item}" for item in self._allowed_hosts()}
+            if origin.lower() not in allowed_origins:
+                return False
+        return self.client_address[0] in {"127.0.0.1", "::1"}
+
+    def _security_headers(self, content_type: str) -> None:
+        self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        self.send_header(
+            "Permissions-Policy",
+            "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+        )
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
+            "connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+        )
+
+    def _json(self, status: int, payload: Any) -> None:
+        encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        self.send_response(status)
+        self._security_headers("application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
+
+    def _error(self, status: int, message: str) -> None:
+        self._json(status, {"ok": False, "error": message})
+
+    def _body(self) -> dict[str, Any]:
+        if self.headers.get("Transfer-Encoding"):
+            raise ValueError("不支持 Transfer-Encoding 请求体")
+        raw_length = self.headers.get("Content-Length", "0")
+        try:
+            length = int(raw_length)
+        except ValueError as exc:
+            raise ValueError("Content-Length 无效") from exc
+        if length < 0 or length > MAX_BODY:
+            raise ValueError("请求体过大")
+        body = self.rfile.read(length)
+        try:
+            value = json.loads(body or b"{}")
+        except json.JSONDecodeError as exc:
+            raise ValueError("JSON 请求体无效") from exc
+        if not isinstance(value, dict):
+            raise ValueError("JSON 根节点必须是对象")
+        return value
+
+    def _authorized_post(self) -> bool:
+        if not self._request_is_local():
+            self._error(HTTPStatus.FORBIDDEN, "拒绝非本机或跨来源请求")
+            return False
+        token = self.headers.get("X-VSG-Token", "")
+        if not secrets.compare_digest(token, self.state.token):
+            self._error(HTTPStatus.FORBIDDEN, "控制令牌无效")
+            return False
+        return True
+
+    def do_GET(self) -> None:
+        if not self._request_is_local():
+            self._error(HTTPStatus.MISDIRECTED_REQUEST, "Host 或来源无效")
+            return
+        parsed = urlsplit(self.path)
+        if parsed.path == "/healthz":
+            self._json(
+                HTTPStatus.OK,
+                {"ok": True, "version": __version__, "instance_id": self.state.instance_id},
+            )
+            return
+        if parsed.path == "/api/bootstrap":
+            self._json(
+                HTTPStatus.OK,
+                {
+                    "ok": True,
+                    "version": __version__,
+                    "instance_id": self.state.instance_id,
+                    "token": self.state.token,
+                    "started_at": self.state.started_at,
+                    "platform": platform_info(),
+                },
+            )
+            return
+        if parsed.path == "/api/status":
+            self._json(
+                HTTPStatus.OK,
+                {
+                    "ok": True,
+                    "snapshot": self.state.collector.get_snapshot(),
+                    "config": self.state.config.public_dict(),
+                    "platform": platform_info(),
+                },
+            )
+            return
+        if parsed.path == "/api/audit":
+            query = parse_qs(parsed.query)
+            try:
+                limit = int(query.get("limit", ["100"])[0])
+            except ValueError:
+                limit = 100
+            self._json(HTTPStatus.OK, {"ok": True, "items": self.state.storage.recent_audit(limit)})
+            return
+        if parsed.path == "/api/impact":
+            self._json(HTTPStatus.OK, {"ok": True, "report": self.state.impact_report()})
+            return
+        if parsed.path == "/api/timeline":
+            query = parse_qs(parsed.query)
+            try:
+                limit = int(query.get("limit", ["200"])[0])
+                hours = max(1, min(int(query.get("hours", ["24"])[0]), 24 * 30))
+            except ValueError:
+                limit, hours = 200, 24
+            category = query.get("category", [None])[0]
+            severity = query.get("severity", [None])[0]
+            self._json(
+                HTTPStatus.OK,
+                {
+                    "ok": True,
+                    "items": self.state.storage.recent_timeline_events(
+                        limit,
+                        category=category if isinstance(category, str) and category else None,
+                        severity=severity if isinstance(severity, str) and severity else None,
+                        since=time.time() - hours * 3600,
+                    ),
+                },
+            )
+            return
+        if parsed.path == "/api/incidents":
+            query = parse_qs(parsed.query)
+            try:
+                hours = int(query.get("hours", ["24"])[0])
+            except ValueError:
+                hours = 24
+            self._json(HTTPStatus.OK, {"ok": True, **build_incident_view(self.state.storage, hours)})
+            return
+        if parsed.path == "/api/log-events":
+            query = parse_qs(parsed.query)
+            try:
+                limit = int(query.get("limit", ["200"])[0])
+                hours = max(1, min(int(query.get("hours", ["24"])[0]), 24 * 30))
+            except ValueError:
+                limit, hours = 200, 24
+            watch_id = query.get("watch_id", [None])[0]
+            severity = query.get("severity", [None])[0]
+            code = query.get("code", [None])[0]
+            self._json(
+                HTTPStatus.OK,
+                {
+                    "ok": True,
+                    "items": self.state.storage.recent_log_events(
+                        limit,
+                        watch_id if isinstance(watch_id, str) and watch_id else None,
+                        severity=severity if isinstance(severity, str) and severity else None,
+                        code=code if isinstance(code, str) and code else None,
+                        since=time.time() - hours * 3600,
+                    ),
+                },
+            )
+            return
+        if parsed.path == "/api/attribution/rules":
+            self._json(
+                HTTPStatus.OK,
+                {"ok": True, "items": self.state.storage.attribution_rules()},
+            )
+            return
+        if parsed.path == "/api/model-inventory":
+            query = parse_qs(parsed.query)
+            try:
+                limit = int(query.get("limit", ["10"])[0])
+            except ValueError:
+                limit = 10
+            self._json(
+                HTTPStatus.OK,
+                {"ok": True, "items": self.state.storage.recent_model_inventory_scans(limit)},
+            )
+            return
+        if parsed.path == "/api/network-topology":
+            snapshot = self.state.collector.get_snapshot()
+            self._json(
+                HTTPStatus.OK,
+                {"ok": True, "topology": snapshot.get("network_topology") or {}},
+            )
+            return
+        if parsed.path == "/api/service-relationships":
+            snapshot = self.state.collector.get_snapshot()
+            self._json(
+                HTTPStatus.OK,
+                {"ok": True, "relationships": snapshot.get("service_relationships") or {}},
+            )
+            return
+        if parsed.path == "/api/model-planner/status":
+            self._json(HTTPStatus.OK, {"ok": True, **self.state.model_planner.status()})
+            return
+        if parsed.path == "/api/advisor/status":
+            self._json(HTTPStatus.OK, {"ok": True, **self.state.advisor_payload()})
+            return
+        if parsed.path == "/api/service-benchmarks":
+            query = parse_qs(parsed.query)
+            fingerprint = query.get("fingerprint", [None])[0]
+            self._json(
+                HTTPStatus.OK,
+                {
+                    "ok": True,
+                    "items": self.state.storage.recent_service_benchmarks(
+                        50, fingerprint if isinstance(fingerprint, str) and fingerprint else None
+                    ),
+                },
+            )
+            return
+        if parsed.path == "/api/stop-verifications":
+            query = parse_qs(parsed.query)
+            fingerprint = query.get("fingerprint", [None])[0]
+            self._json(
+                HTTPStatus.OK,
+                {
+                    "ok": True,
+                    "items": self.state.storage.recent_stop_verifications(
+                        50, fingerprint if isinstance(fingerprint, str) and fingerprint else None
+                    ),
+                },
+            )
+            return
+        if parsed.path == "/api/benchmark-matrix/status":
+            query = parse_qs(parsed.query)
+            job_id = query.get("job_id", [None])[0]
+            self._json(
+                HTTPStatus.OK,
+                {
+                    "ok": True,
+                    **self.state.workload_matrix.status(
+                        job_id if isinstance(job_id, str) and job_id else None
+                    ),
+                },
+            )
+            return
+        if parsed.path == "/api/snapshots":
+            self._json(
+                HTTPStatus.OK,
+                {"ok": True, "items": list_snapshot_manifests(self.state.data_dir)},
+            )
+            return
+        if parsed.path in {"/", "/index.html"}:
+            self._static("index.html", "text/html; charset=utf-8")
+            return
+        if parsed.path == "/assets/styles.css":
+            self._static("styles.css", "text/css; charset=utf-8")
+            return
+        if parsed.path == "/assets/app.js":
+            self._static("app.js", "application/javascript; charset=utf-8")
+            return
+        if parsed.path == "/assets/i18n.js":
+            self._static("i18n.js", "application/javascript; charset=utf-8")
+            return
+        self._error(HTTPStatus.NOT_FOUND, "资源不存在")
+
+    def _static(self, filename: str, content_type: str) -> None:
+        try:
+            content = resources.files("vsg").joinpath("web", filename).read_bytes()
+        except (FileNotFoundError, OSError):
+            self._error(HTTPStatus.NOT_FOUND, "静态资源缺失")
+            return
+        self.send_response(HTTPStatus.OK)
+        self._security_headers(content_type)
+        self.send_header("Content-Length", str(len(content)))
+        self.end_headers()
+        self.wfile.write(content)
+
+    def do_POST(self) -> None:
+        if not self._authorized_post():
+            return
+        try:
+            body = self._body()
+        except ValueError as exc:
+            self._error(HTTPStatus.BAD_REQUEST, str(exc))
+            return
+        path = urlsplit(self.path).path
+        try:
+            if path == "/api/refresh":
+                self.state.collector.request_refresh()
+                self._json(HTTPStatus.ACCEPTED, {"ok": True})
+                return
+            if path == "/api/settings":
+                config = self.state.update_config(body)
+                self._json(HTTPStatus.OK, {"ok": True, "config": config.public_dict()})
+                return
+            if path == "/api/impact/feedback":
+                service = self._require_service(body)
+                risk = service.get("risk") or {}
+                feedback = self.state.storage.set_impact_feedback(
+                    str(service.get("fingerprint") or ""),
+                    str(body.get("outcome") or ""),
+                    str(risk.get("level") or "unknown"),
+                    risk.get("score"),
+                    str(service.get("source") or "unknown"),
+                )
+                self.state.storage.add_audit(
+                    "impact.feedback",
+                    service["id"],
+                    "success",
+                    {"outcome": feedback.get("outcome")},
+                )
+                self.state.collector.record_impact_feedback(service["id"], feedback)
+                self._json(HTTPStatus.OK, {"ok": True, "feedback": feedback})
+                return
+            if path == "/api/impact/export":
+                if str(body.get("confirmation") or "") != "EXPORT REPORT":
+                    raise ValueError("确认短语必须精确输入 EXPORT REPORT")
+                envelope = build_export_envelope(self.state.impact_report())
+                digest = envelope["integrity"]["canonical_report_sha256"]
+                self.state.storage.add_audit(
+                    "impact.export",
+                    "aggregate_report",
+                    "success",
+                    {"schema_version": envelope["report"]["schema_version"], "sha256": digest},
+                )
+                filename = time.strftime("vsg-impact-report-%Y%m%d-%H%M%SZ.json", time.gmtime())
+                self._json(
+                    HTTPStatus.OK,
+                    {"ok": True, "filename": filename, "export": envelope},
+                )
+                return
+            if path == "/api/attribution/rules":
+                rule = validate_rule_payload(body, self.state.config.project_roots)
+                rule_id = self.state.storage.add_attribution_rule(rule)
+                self.state.storage.add_audit(
+                    "attribution_rule.create", str(rule_id), "success", {"name": rule["name"]}
+                )
+                self.state.collector.request_refresh()
+                self._json(HTTPStatus.OK, {"ok": True, "id": rule_id, "rule": rule})
+                return
+            if path == "/api/attribution/rules/delete":
+                rule_id = int(body.get("rule_id") or 0)
+                if rule_id <= 0 or str(body.get("confirmation") or "") != f"DELETE RULE {rule_id}":
+                    raise AttributionRuleError(f"确认短语必须是 DELETE RULE {rule_id}")
+                deleted = self.state.storage.delete_attribution_rule(rule_id)
+                if not deleted:
+                    raise AttributionRuleError("归属规则不存在")
+                self.state.storage.add_audit("attribution_rule.delete", str(rule_id), "success")
+                self.state.collector.request_refresh()
+                self._json(HTTPStatus.OK, {"ok": True, "deleted": rule_id})
+                return
+            if path == "/api/service/attribute":
+                service = self._require_service(body)
+                raw_rule = {
+                    "name": body.get("name") or f"Attribution · {service.get('display_name') or service.get('fingerprint')}",
+                    "priority": body.get("priority") or 500,
+                    "match": {"fingerprint": service.get("fingerprint")},
+                    "override": body.get("override") or {},
+                }
+                rule = validate_rule_payload(raw_rule, self.state.config.project_roots)
+                rule_id = self.state.storage.add_attribution_rule(rule)
+                self.state.storage.add_audit(
+                    "service.attribution_corrected", service["id"], "success", {"rule_id": rule_id}
+                )
+                self.state.collector.request_refresh()
+                self._json(HTTPStatus.OK, {"ok": True, "id": rule_id, "rule": rule})
+                return
+            if path == "/api/model-inventory/scan":
+                result = scan_model_directory(
+                    str(body.get("root") or ""), str(body.get("confirmation") or "")
+                )
+                add_capacity_hints(result, self.state.model_planner.hardware())
+                scan_id = self.state.storage.add_model_inventory_scan(result)
+                result["id"] = scan_id
+                self.state.storage.add_audit(
+                    "model_inventory.scan",
+                    str(result.get("root_hash") or "models"),
+                    "success",
+                    {
+                        "root_name": result.get("root_name"),
+                        "assets": (result.get("summary") or {}).get("assets"),
+                        "truncated": result.get("truncated"),
+                    },
+                )
+                self._json(HTTPStatus.OK, {"ok": True, "scan": result})
+                return
+            if path == "/api/history/clear":
+                if str(body.get("confirmation") or "") != "CLEAR HISTORY":
+                    raise ValueError("确认短语必须精确输入 CLEAR HISTORY")
+                categories = body.get("categories")
+                if not isinstance(categories, list):
+                    raise ValueError("categories 必须是数组")
+                result = self.state.storage.clear_history(categories)
+                self.state.storage.add_audit(
+                    "history.clear", "local_history", "success", {"removed": result}
+                )
+                self._json(HTTPStatus.OK, {"ok": True, "removed": result})
+                return
+            if path == "/api/model-planner/refresh":
+                result = self.state.model_planner.refresh()
+                self.state.storage.add_audit(
+                    "model_planner.hardware_refresh",
+                    str(result.get("hardware", {}).get("hardware_fingerprint") or "hardware"),
+                    "success",
+                )
+                self._json(HTTPStatus.OK, {"ok": True, **result})
+                return
+            if path == "/api/model-planner/estimate":
+                result = self.state.model_planner.estimate(body)
+                workload = result.get("workload", {})
+                self.state.storage.add_audit(
+                    "model_planner.estimate",
+                    str(result.get("selected_model_id") or "no_match"),
+                    "success",
+                    {
+                        "concurrency": workload.get("concurrency"),
+                        "context_tokens": workload.get("context_tokens"),
+                        "target_tps_per_user": workload.get("target_tps_per_user"),
+                    },
+                )
+                self._json(HTTPStatus.OK, {"ok": True, "estimate": result})
+                return
+            if path == "/api/advisor/evaluate":
+                result = self.state.advisor_payload(body)
+                request = result.get("engine", {}).get("request", {})
+                top_engines = result.get("engine", {}).get("top3", [])
+                self.state.storage.add_audit(
+                    "advisor.evaluate",
+                    str(top_engines[0].get("id") if top_engines else "no_match"),
+                    "success",
+                    {
+                        "model_format": request.get("model_format"),
+                        "priority": request.get("priority"),
+                        "concurrency": request.get("concurrency"),
+                        "context_tokens": request.get("context_tokens"),
+                    },
+                )
+                self._json(HTTPStatus.OK, {"ok": True, **result})
+                return
+            if path == "/api/log-monitor/watch":
+                service = self._require_service(body)
+                result = self.state.log_monitor.start_watch(
+                    service,
+                    str(body.get("path") or ""),
+                    str(body.get("confirmation") or ""),
+                )
+                self.state.log_monitor.poll(self.state.collector.get_snapshot().get("services", []))
+                self.state.storage.add_audit(
+                    "log_monitor.watch",
+                    service["id"],
+                    "success",
+                    {"watch_id": result.get("id"), "file_name": result.get("file_name")},
+                )
+                self.state.collector.request_refresh()
+                self._json(
+                    HTTPStatus.OK,
+                    {"ok": True, "watch": result, "log_monitor": self.state.log_monitor.status()},
+                )
+                return
+            if path == "/api/log-monitor/unwatch":
+                watch_id = str(body.get("watch_id") or "")
+                if not watch_id:
+                    raise LogMonitorError("缺少 watch_id")
+                result = self.state.log_monitor.stop_watch(
+                    watch_id, str(body.get("confirmation") or "")
+                )
+                self.state.storage.add_audit(
+                    "log_monitor.unwatch",
+                    watch_id,
+                    "success",
+                    {"file_name": result.get("file_name")},
+                )
+                self.state.collector.request_refresh()
+                self._json(
+                    HTTPStatus.OK,
+                    {"ok": True, "watch": result, "log_monitor": self.state.log_monitor.status()},
+                )
+                return
+            if path == "/api/model-planner/benchmark":
+                result = self.state.model_planner.benchmark(body)
+                self.state.storage.add_audit(
+                    "model_planner.benchmark",
+                    str(result.get("model_id") or "model"),
+                    "success",
+                    {
+                        "benchmark_id": result.get("id"),
+                        "quantization": result.get("quantization"),
+                        "model_file_name": result.get("model_file_name"),
+                    },
+                )
+                self._json(HTTPStatus.OK, {"ok": True, "benchmark": result})
+                return
+            if path == "/api/service/stop-assessment":
+                service = self._require_service(body)
+                snapshot = self.state.collector.get_snapshot()
+                assessment = (
+                    (snapshot.get("service_relationships") or {}).get("assessments") or {}
+                ).get(service.get("id"))
+                if not assessment:
+                    assessment = service.get("stop_assessment") or {}
+                self.state.storage.add_audit(
+                    "process.stop_assessment",
+                    service["id"],
+                    "success",
+                    {
+                        "decision": assessment.get("decision"),
+                        "client_count": (assessment.get("impact") or {}).get("client_count"),
+                    },
+                )
+                self._json(HTTPStatus.OK, {"ok": True, "assessment": assessment})
+                return
+            if path == "/api/benchmark-matrix/preview":
+                service = self._require_service(body)
+                snapshot = self.state.collector.get_snapshot()
+                probe = next(
+                    (
+                        item
+                        for item in snapshot.get("runtime_probes", [])
+                        if item.get("service_id") == service.get("id")
+                    ),
+                    None,
+                )
+                if not probe:
+                    raise WorkloadMatrixError("该服务没有可用的只读运行时探测结果")
+                catalog_model_id = str(body.get("catalog_model_id") or "").strip() or None
+                quantization = str(body.get("quantization") or "").strip() or None
+                if catalog_model_id and not self.state.model_planner.catalog_model(catalog_model_id):
+                    raise WorkloadMatrixError("容量目录模型映射无效")
+                if catalog_model_id and quantization not in QUANTIZATIONS:
+                    raise WorkloadMatrixError("进入容量校准时必须选择有效量化版本")
+                if not catalog_model_id:
+                    quantization = None
+                plan = self.state.workload_matrix.preview(
+                    service,
+                    probe,
+                    catalog_model_id=catalog_model_id,
+                    quantization=quantization,
+                )
+                self.state.storage.add_audit(
+                    "benchmark_matrix.preview",
+                    service["id"],
+                    "success",
+                    {
+                        "plan_id": plan.get("plan_id"),
+                        "steps": len(plan.get("steps") or []),
+                        "capacity_calibration": plan.get("capacity_calibration"),
+                    },
+                )
+                self._json(HTTPStatus.OK, {"ok": True, "plan": plan})
+                return
+            if path == "/api/benchmark-matrix/start":
+                job = self.state.workload_matrix.start(
+                    str(body.get("plan_id") or ""),
+                    str(body.get("confirmation") or ""),
+                )
+                self._json(HTTPStatus.ACCEPTED, {"ok": True, "job": job})
+                return
+            if path == "/api/benchmark-matrix/cancel":
+                job = self.state.workload_matrix.cancel(str(body.get("job_id") or ""))
+                self._json(HTTPStatus.ACCEPTED, {"ok": True, "job": job})
+                return
+            if path == "/api/service/benchmark":
+                service = self._require_service(body)
+                snapshot = self.state.collector.get_snapshot()
+                probe = next(
+                    (
+                        item
+                        for item in snapshot.get("runtime_probes", [])
+                        if item.get("service_id") == service.get("id")
+                    ),
+                    None,
+                )
+                if not probe:
+                    raise ServiceBenchmarkError("该服务没有可用的只读运行时探测结果")
+                result = run_service_benchmark(
+                    service,
+                    probe,
+                    body,
+                    float(snapshot.get("telemetry", {}).get("memory", {}).get("used_percent") or 0),
+                )
+                result["id"] = self.state.storage.add_service_benchmark(result)
+                self.state.storage.add_audit(
+                    "service.benchmark",
+                    service["id"],
+                    "success" if result["successful_requests"] else "failed",
+                    {
+                        "benchmark_id": result["id"],
+                        "port": result["port"],
+                        "concurrency": result["concurrency"],
+                        "requested_context_tokens": result["requested_context_tokens"],
+                    },
+                )
+                self.state.collector.request_refresh()
+                self._json(HTTPStatus.OK, {"ok": True, "benchmark": result})
+                return
+            if path == "/api/diagnostics/log":
+                service = self._require_service(body)
+                pid = int(service.get("process", {}).get("pid") or 0)
+                result = inspect_log(
+                    str(body.get("path") or ""), str(body.get("confirmation") or ""), pid
+                )
+                self.state.storage.add_audit(
+                    "diagnostics.log_inspect",
+                    service["id"],
+                    "success",
+                    {"file_name": result["file_name"], "lines_examined": result["lines_examined"]},
+                )
+                self._json(HTTPStatus.OK, {"ok": True, "result": result})
+                return
+            if path == "/api/diagnostics/config":
+                service = self._require_service(body)
+                pid = int(service.get("process", {}).get("pid") or 0)
+                result = inspect_config(
+                    str(body.get("path") or ""), str(body.get("confirmation") or ""), pid
+                )
+                self.state.storage.add_audit(
+                    "diagnostics.config_inspect",
+                    service["id"],
+                    "success",
+                    {"file_name": result["file_name"], "syntax": result["syntax"]},
+                )
+                self._json(HTTPStatus.OK, {"ok": True, "result": result})
+                return
+            if path == "/api/snapshots/create":
+                raw_paths = body.get("paths")
+                result = create_snapshot_manifest(
+                    raw_paths if isinstance(raw_paths, list) else [],
+                    self.state.data_dir,
+                    str(body.get("confirmation") or ""),
+                )
+                self.state.storage.add_audit(
+                    "snapshot.create",
+                    str(result["snapshot_id"]),
+                    "success",
+                    {"files": len(result["items"]), "rollback_items": sum(bool(item.get("rollback_available")) for item in result["items"])},
+                )
+                public_result = {
+                    **result,
+                    "items": [
+                        {key: value for key, value in item.items() if key != "original_path"}
+                        for item in result["items"]
+                    ],
+                }
+                self._json(HTTPStatus.OK, {"ok": True, "snapshot": public_result})
+                return
+            if path == "/api/snapshots/restore":
+                result = restore_config_snapshot(
+                    self.state.data_dir,
+                    str(body.get("snapshot_id") or ""),
+                    int(body.get("item_index", -1)),
+                    str(body.get("confirmation") or ""),
+                )
+                self.state.storage.add_audit(
+                    "snapshot.restore", str(result["snapshot_id"]), "success", {"file_name": result["file_name"]}
+                )
+                self._json(HTTPStatus.OK, {"ok": True, "result": result})
+                return
+            if path == "/api/process/mark":
+                service = self._require_service(body)
+                expected = bool(body.get("expected", False))
+                protected = bool(body.get("protected", False))
+                self.state.storage.set_mark(
+                    service["fingerprint"], expected, protected, str(body.get("note") or "")
+                )
+                self.state.storage.add_audit(
+                    "service.mark",
+                    service["id"],
+                    "success",
+                    {"expected": expected, "protected": protected},
+                )
+                self.state.collector.request_refresh()
+                self._json(HTTPStatus.OK, {"ok": True})
+                return
+            if path == "/api/process/stop":
+                service = self._require_service(body)
+                if service.get("source") != "host":
+                    raise ActionError("只允许停止普通宿主机开发/推理进程；Agent 本体、系统服务、Docker 和 WSL 仅展示")
+                if not service.get("metadata", {}).get("stoppable_candidate"):
+                    raise ActionError("只允许停止已识别的开发或模型推理运行时；普通应用、LM Studio 主程序和系统进程仅展示")
+                process = service["process"]
+                result = terminate_process_tree(
+                    int(process["pid"]),
+                    process.get("create_time"),
+                    str(body.get("confirmation") or ""),
+                    self.state.config.protected_names,
+                    already_protected=bool(service.get("protected")),
+                )
+                verification = verify_post_stop(
+                    service,
+                    [*result.get("terminated", []), *result.get("forced", [])],
+                )
+                if result.get("errors"):
+                    verification.setdefault("limitations", []).extend(result["errors"])
+                verification["id"] = self.state.storage.add_stop_verification(verification)
+                result["verification"] = verification
+                self.state.storage.add_audit(
+                    "process.stop",
+                    service["id"],
+                    "success" if verification.get("outcome") == "stopped" else str(verification.get("outcome") or "unknown"),
+                    {
+                        "pid": process["pid"],
+                        "terminated": result.get("terminated"),
+                        "forced": result.get("forced"),
+                        "action_completed": result.get("completed"),
+                        "action_errors": result.get("errors"),
+                        "verification_id": verification.get("id"),
+                        "verification_outcome": verification.get("outcome"),
+                        "replacement_pids": verification.get("replacement_pids"),
+                    },
+                )
+                self.state.collector.request_refresh()
+                self._json(HTTPStatus.OK, {"ok": True, "result": result})
+                return
+            if path == "/api/open/path":
+                service = self._require_service(body)
+                project_path = service.get("project", {}).get("path")
+                if not project_path:
+                    raise ActionError("该服务没有已归属的项目目录")
+                open_project_path(project_path, self.state.config.project_roots)
+                self.state.storage.add_audit("project.open", service["id"], "success")
+                self._json(HTTPStatus.OK, {"ok": True})
+                return
+            if path == "/api/open/url":
+                service = self._require_service(body)
+                port = int(body.get("port") or 0)
+                if service.get("source") in {"host", "agent", "windows_service"} and not service.get("metadata", {}).get("openable_candidate"):
+                    raise ActionError("该端点未识别为开发 Web 服务，不自动用浏览器打开")
+                allowed_ports = {
+                    int(item["port"])
+                    for item in service.get("endpoints", [])
+                    if item.get("protocol") == "TCP"
+                }
+                if port not in allowed_ports:
+                    raise ActionError("端口不属于该服务的 TCP 监听端点")
+                url = open_local_url(port)
+                self.state.storage.add_audit("service.open_url", service["id"], "success", {"port": port})
+                self._json(HTTPStatus.OK, {"ok": True, "url": url})
+                return
+            if path == "/api/shutdown":
+                self.state.storage.add_audit("application.shutdown", "vsg", "success")
+                self._json(HTTPStatus.OK, {"ok": True})
+                threading.Thread(target=self.server.shutdown, name="vsg-shutdown", daemon=True).start()
+                return
+        except (
+            ActionError,
+            AttributionRuleError,
+            DiagnosticError,
+            LogMonitorError,
+            ModelInventoryError,
+            ServiceBenchmarkError,
+            WorkloadMatrixError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            target = str(body.get("service_id") or "request")
+            self.state.storage.add_audit("request.rejected", target, "rejected", {"reason": str(exc)})
+            self._error(HTTPStatus.CONFLICT, str(exc))
+            return
+        except Exception as exc:
+            LOGGER.exception("request failed: %s", path)
+            self._error(HTTPStatus.INTERNAL_SERVER_ERROR, f"操作失败：{type(exc).__name__}")
+            return
+        self._error(HTTPStatus.NOT_FOUND, "接口不存在")
+
+    def _require_service(self, body: dict[str, Any]) -> dict[str, Any]:
+        service_id = body.get("service_id")
+        if not isinstance(service_id, str) or not service_id:
+            raise ValueError("缺少 service_id")
+        service = self.state.collector.find_service(service_id)
+        if not service:
+            raise ActionError("目标服务已变化，请刷新后重试")
+        return service
+
+
+def _runtime_file(data_dir: Path) -> Path:
+    return data_dir / "runtime.json"
+
+
+def _write_runtime(data_dir: Path, port: int, instance_id: str) -> None:
+    path = _runtime_file(data_dir)
+    atomic_write_private_text(
+        path,
+        json.dumps(
+            {
+                "pid": os.getpid(),
+                "port": port,
+                "instance_id": instance_id,
+                "started_at": time.time(),
+            },
+            indent=2,
+        )
+        + "\n",
+    )
+
+
+def _read_runtime(data_dir: Path) -> dict[str, Any] | None:
+    try:
+        value = json.loads(_runtime_file(data_dir).read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else None
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _validated_control_url(url: str) -> Any:
+    parsed = urlsplit(url)
+    if (
+        parsed.scheme != "http"
+        or parsed.hostname not in {"127.0.0.1", "localhost"}
+        or parsed.port is None
+        or not 1 <= parsed.port <= 65535
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+        or any(character in parsed.path for character in "\r\n")
+    ):
+        raise ValueError("控制地址必须是无凭据的本机 HTTP URL")
+    return parsed
+
+
+def _read_control_json(response: Any) -> dict[str, Any]:
+    body = response.read(MAX_CONTROL_RESPONSE + 1)
+    if len(body) > MAX_CONTROL_RESPONSE:
+        raise ValueError("控制接口响应超过 1 MiB")
+    value = json.loads(body.decode("utf-8"))
+    if not isinstance(value, dict):
+        raise ValueError("控制接口响应根节点无效")
+    return value
+
+
+def _get_json(url: str, timeout: float = 2.0) -> dict[str, Any]:
+    parsed = _validated_control_url(url)
+    request = urllib.request.Request(url, headers={"Host": parsed.netloc})
+    # The validator above permits loopback HTTP only.
+    with urllib.request.urlopen(  # nosec B310
+        request, timeout=timeout
+    ) as response:
+        return _read_control_json(response)
+
+
+def _health_is_vsg(payload: Any, expected_instance_id: str | None = None) -> bool:
+    valid = (
+        isinstance(payload, dict)
+        and payload.get("ok") is True
+        and payload.get("version") == __version__
+        and isinstance(payload.get("instance_id"), str)
+        and bool(payload.get("instance_id"))
+    )
+    if not valid:
+        return False
+    return expected_instance_id is None or payload.get("instance_id") == expected_instance_id
+
+
+def _post_json(url: str, token: str, body: dict[str, Any] | None = None, timeout: float = 3.0) -> dict[str, Any]:
+    parsed = _validated_control_url(url)
+    encoded = json.dumps(body or {}).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=encoded,
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "X-VSG-Token": token,
+            "Host": parsed.netloc,
+        },
+    )
+    # The validator above permits loopback HTTP only.
+    with urllib.request.urlopen(  # nosec B310
+        request, timeout=timeout
+    ) as response:
+        return _read_control_json(response)
+
+
+def control_existing(data_dir: Path, action: str) -> int:
+    runtime = _read_runtime(data_dir)
+    if not runtime:
+        return 2
+    port = runtime.get("port")
+    instance_id = runtime.get("instance_id")
+    if (
+        isinstance(port, bool)
+        or not isinstance(port, int)
+        or not 1 <= port <= 65535
+        or not isinstance(instance_id, str)
+        or not instance_id
+    ):
+        return 2
+    base = f"http://127.0.0.1:{port}"
+    try:
+        if action == "open":
+            if not _health_is_vsg(_get_json(base + "/healthz"), instance_id):
+                return 3
+            webbrowser.open(base + "/", new=2)
+            return 0
+        if not _health_is_vsg(_get_json(base + "/healthz"), instance_id):
+            return 3
+        bootstrap = _get_json(base + "/api/bootstrap")
+        if (
+            not isinstance(bootstrap, dict)
+            or bootstrap.get("version") != __version__
+            or bootstrap.get("instance_id") != instance_id
+            or not isinstance(bootstrap.get("token"), str)
+        ):
+            return 3
+        _post_json(base + "/api/shutdown", bootstrap["token"])
+        return 0
+    except (OSError, urllib.error.URLError, KeyError, json.JSONDecodeError):
+        return 3
+
+
+def _create_server(port: int, state: AppState) -> VSGServer:
+    candidates = [port] if port == 0 else list(range(port, min(port + 20, 65536)))
+    last_error: OSError | None = None
+    for candidate in candidates:
+        try:
+            return VSGServer(("127.0.0.1", candidate), state)
+        except OSError as exc:
+            last_error = exc
+    raise last_error or OSError("无法分配本地端口")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Vibe Service Guardian")
+    parser.add_argument("--port", type=int, default=None, help="本地控制台端口；0 表示自动分配")
+    parser.add_argument("--data-dir", type=Path, default=None)
+    parser.add_argument("--open", action="store_true", help="启动后打开浏览器")
+    parser.add_argument("--open-existing", action="store_true", help="打开已运行的控制台")
+    parser.add_argument("--stop", action="store_true", help="停止已运行的控制台")
+    parser.add_argument("--once", action="store_true", help="执行一次只读扫描并输出摘要")
+    parser.add_argument("--json", action="store_true", help="与 --once 一起输出完整 JSON")
+    parser.add_argument("--verbose", action="store_true")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    data_dir = (args.data_dir or default_data_dir()).expanduser().resolve()
+    configure_logging(data_dir, args.verbose)
+    if args.open_existing:
+        return control_existing(data_dir, "open")
+    if args.stop:
+        return control_existing(data_dir, "stop")
+
+    config = load_config(data_dir)
+    if args.once:
+        storage = Storage(data_dir)
+        try:
+            snapshot = Scanner(config, storage).scan()
+        finally:
+            storage.close()
+        output = snapshot if args.json else {
+            "generated_at": snapshot["generated_at"],
+            "duration_ms": snapshot["duration_ms"],
+            "summary": snapshot["summary"],
+            "collectors": snapshot["collectors"],
+            "errors": snapshot["errors"],
+        }
+        print(json.dumps(output, ensure_ascii=False, indent=2))
+        return 0
+
+    existing = _read_runtime(data_dir)
+    if existing:
+        existing_port = existing.get("port")
+        existing_instance = existing.get("instance_id")
+    else:
+        existing_port = None
+        existing_instance = None
+    if (
+        isinstance(existing_port, int)
+        and not isinstance(existing_port, bool)
+        and 1 <= existing_port <= 65535
+        and isinstance(existing_instance, str)
+        and existing_instance
+    ):
+        try:
+            health = _get_json(
+                f"http://127.0.0.1:{existing_port}/healthz",
+                timeout=0.7,
+            )
+            if _health_is_vsg(health, existing_instance):
+                if args.open:
+                    webbrowser.open(f"http://127.0.0.1:{existing_port}/", new=2)
+                return 0
+        except (
+            OSError,
+            ValueError,
+            urllib.error.URLError,
+            json.JSONDecodeError,
+        ):
+            pass
+
+    state = AppState(data_dir, config)
+    preferred_port = args.port if args.port is not None else config.preferred_port
+    try:
+        server = _create_server(preferred_port, state)
+    except OSError:
+        state.storage.close()
+        LOGGER.exception("unable to bind local server")
+        return 4
+    state.server = server
+    actual_port = server.server_address[1]
+    _write_runtime(data_dir, actual_port, state.instance_id)
+    state.storage.add_audit("application.start", "vsg", "success", {"port": actual_port, "version": __version__})
+    state.collector.start()
+
+    if args.open:
+        threading.Timer(0.8, lambda: webbrowser.open(f"http://127.0.0.1:{actual_port}/", new=2)).start()
+
+    stopping = threading.Event()
+
+    def handle_signal(_signum: int, _frame: Any) -> None:
+        if not stopping.is_set():
+            stopping.set()
+            threading.Thread(target=server.shutdown, daemon=True).start()
+
+    for signal_name in ("SIGINT", "SIGTERM"):
+        if hasattr(signal, signal_name):
+            try:
+                signal.signal(getattr(signal, signal_name), handle_signal)
+            except (OSError, ValueError):
+                pass
+
+    LOGGER.info("VSG %s listening on 127.0.0.1:%s", __version__, actual_port)
+    try:
+        server.serve_forever(poll_interval=0.4)
+    finally:
+        server.server_close()
+        state.close()
+        runtime = _read_runtime(data_dir)
+        if runtime and runtime.get("pid") == os.getpid():
+            try:
+                _runtime_file(data_dir).unlink()
+            except OSError:
+                pass
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

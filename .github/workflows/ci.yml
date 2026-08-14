@@ -1,0 +1,127 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-latest, python: "3.10", lock_os: linux, py_tag: py310}
+          - {os: ubuntu-latest, python: "3.12", lock_os: linux, py_tag: py312}
+          - {os: windows-latest, python: "3.10", lock_os: windows, py_tag: py310}
+          - {os: windows-latest, python: "3.12", lock_os: windows, py_tag: py312}
+          - {os: macos-latest, python: "3.10", lock_os: macos, py_tag: py310}
+          - {os: macos-latest, python: "3.12", lock_os: macos, py_tag: py312}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: requirements-lock/runtime-${{ matrix.lock_os }}-${{ matrix.py_tag }}.txt
+      - name: Verify requirement-lock metadata
+        run: python scripts/Requirement-Locks.py --verify
+      - name: Install hash-locked runtime dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check --only-binary=:all:
+          --no-deps --require-hashes
+          --requirement requirements-lock/runtime-${{ matrix.lock_os }}-${{ matrix.py_tag }}.txt
+      - name: Compile source
+        run: python -m compileall -q vsg scripts tests
+      - name: Run unit and isolated integration tests
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python -m unittest discover -s tests -v
+      - name: Audit intended public tree
+        run: python scripts/Audit-Public-Tree.py --root .
+
+  quality-and-security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-lock/audit-linux-py312.txt
+      - name: Verify requirement-lock metadata
+        run: python scripts/Requirement-Locks.py --verify
+      - name: Install hash-locked audit tools
+        run: >-
+          python -m pip install --disable-pip-version-check --only-binary=:all:
+          --require-hashes --requirement requirements-lock/audit-linux-py312.txt
+      - name: Ruff
+        run: python -m ruff check vsg tests scripts
+      - name: Bandit medium/high gate
+        run: python -m bandit -q -r vsg scripts -ll -ii
+      - name: Audit runtime dependencies
+        run: python -m pip_audit --requirement requirements.txt
+      - name: Audit Windows build dependencies
+        run: python -m pip_audit --requirement requirements-build.txt
+      - name: Audit macOS build dependencies
+        run: python -m pip_audit --requirement requirements-build-macos.txt
+      - name: Audit Linux build dependencies
+        run: python -m pip_audit --requirement requirements-build-linux.txt
+
+  native-package-smoke:
+    name: Native package smoke / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-latest, lock_os: linux}
+          - {os: windows-latest, lock_os: windows}
+          - {os: macos-latest, lock_os: macos}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-lock/build-${{ matrix.lock_os }}-py312.txt
+      - name: Install hash-locked build dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check --only-binary=:all:
+          --no-deps --require-hashes
+          --requirement requirements-lock/build-${{ matrix.lock_os }}-py312.txt
+      - name: Build native executable
+        run: python -m PyInstaller --noconfirm --clean VibeServiceGuardian.spec
+      - name: Validate Windows executable
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: >-
+          ./scripts/Validate-Windows.ps1
+          -Executable ./dist/VibeServiceGuardian.exe
+      - name: Prepare and validate macOS executable
+        if: runner.os == 'macOS'
+        run: |
+          cp dist/VibeServiceGuardian ./VibeServiceGuardian
+          chmod +x ./VibeServiceGuardian scripts/Validate-macOS.sh
+          scripts/Validate-macOS.sh
+      - name: Prepare and validate Linux executable
+        if: runner.os == 'Linux'
+        run: |
+          cp dist/VibeServiceGuardian ./VibeServiceGuardian
+          chmod +x ./VibeServiceGuardian scripts/Validate-Linux.sh
+          scripts/Validate-Linux.sh

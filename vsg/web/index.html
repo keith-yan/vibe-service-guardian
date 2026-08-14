@@ -1,0 +1,544 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Vibe Service Guardian</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#service-list">跳到服务列表</a>
+  <div class="app-shell">
+    <header class="hero">
+      <div class="identity">
+        <div class="eyebrow"><span class="eyebrow-square"></span> VIBE SERVICE GUARDIAN</div>
+        <div class="title-line">
+          <h1>服务守望</h1>
+          <span class="english-title">SERVICES</span>
+        </div>
+        <p>追踪本机监听端口、项目与 Agent 会话，识别疑似遗留开发服务 <span id="platform-badge" class="source-badge">正在识别平台</span></p>
+      </div>
+      <div class="hero-actions">
+        <label class="search-box" id="service-search-box">
+          <span aria-hidden="true">⌕</span>
+          <span class="sr-only">搜索服务</span>
+          <input id="search-input" type="search" placeholder="搜索服务、端口、项目、Agent 或命令…" autocomplete="off">
+          <kbd id="search-shortcut">Ctrl K</kbd>
+        </label>
+        <div class="action-row" id="service-action-row">
+          <button class="button language-toggle" id="language-toggle" type="button" aria-label="切换到英文" title="切换到英文">EN</button>
+          <button class="button" id="impact-report-button" type="button">本机成效</button>
+          <button class="button" id="audit-button" type="button">操作记录</button>
+          <button class="button" id="settings-button" type="button">设置</button>
+          <button class="button button-primary" id="refresh-button" type="button">刷新状态</button>
+        </div>
+      </div>
+    </header>
+
+    <nav class="workspace-nav" aria-label="主功能">
+      <button class="workspace-tab active" type="button" data-view="services" aria-controls="services-view" aria-selected="true">服务监控</button>
+      <button class="workspace-tab" type="button" data-view="model-planner" aria-controls="model-planner-view" aria-selected="false">模型容量规划</button>
+      <button class="workspace-tab" type="button" data-view="health" aria-controls="health-view" aria-selected="false">AI 运行体检</button>
+      <button class="workspace-tab" type="button" data-view="advisor" aria-controls="advisor-view" aria-selected="false">优化与引擎建议</button>
+      <button class="workspace-tab" type="button" data-view="operations" aria-controls="operations-view" aria-selected="false">事件与模型资产</button>
+    </nav>
+
+    <main>
+      <section class="view-panel" id="services-view">
+      <section class="summary-grid" aria-label="服务摘要">
+        <article class="summary-card"><span class="summary-icon green">▣</span><div><span>服务进程</span><strong id="metric-services">—</strong><small>含分组来源</small></div></article>
+        <article class="summary-card"><span class="summary-icon blue">⇆</span><div><span>监听端口</span><strong id="metric-ports">—</strong><small id="metric-protocols">TCP / UDP</small></div></article>
+        <article class="summary-card"><span class="summary-icon cyan">◇</span><div><span>关联项目</span><strong id="metric-projects">—</strong><small>已识别目录</small></div></article>
+        <article class="summary-card"><span class="summary-icon violet">◎</span><div><span>Agent 来源</span><strong id="metric-agents">—</strong><small>活跃归属</small></div></article>
+        <article class="summary-card"><span class="summary-icon amber">!</span><div><span>需要复核</span><strong id="metric-review">—</strong><small>规则评分提示</small></div></article>
+        <article class="summary-card"><span class="summary-icon slate">◷</span><div><span>系统负载</span><strong id="metric-load">—</strong><small>CPU / 内存</small></div></article>
+        <article class="summary-card"><span class="summary-icon slate">↻</span><div><span>最后更新</span><strong class="time-value" id="metric-updated">—</strong><small id="metric-duration">等待采集</small></div></article>
+      </section>
+
+      <section class="collector-strip" id="collector-strip" aria-label="采集器状态"></section>
+
+      <section class="relationship-panel" aria-label="服务关系与关停判断">
+        <div class="relationship-summary">
+          <div><span>本机依赖</span><strong id="relationship-dependencies">—</strong></div>
+          <div><span>可直接确认</span><strong id="relationship-allowed">—</strong></div>
+          <div><span>需先复核</span><strong id="relationship-review">—</strong></div>
+          <div><span>只读阻断</span><strong id="relationship-blocked">—</strong></div>
+        </div>
+        <div class="relationship-list" id="relationship-list"><span class="confidence-note">正在关联项目、Agent、客户端与监听服务…</span></div>
+      </section>
+
+      <section class="service-section" id="service-list">
+        <div class="section-heading">
+          <div>
+            <div class="eyebrow"><span class="eyebrow-square"></span> SERVICES · 服务清单</div>
+            <h2>本机服务归属</h2>
+          </div>
+          <div class="legend">
+            <span><i class="dot normal"></i>正常</span>
+            <span><i class="dot review"></i>建议复核</span>
+            <span><i class="dot stale"></i>疑似遗留</span>
+          </div>
+        </div>
+
+        <div class="filter-bar" role="toolbar" aria-label="服务过滤器">
+          <div class="filter-tabs" id="source-tabs">
+            <button class="chip active" data-source="all" type="button">全部 <span id="count-all">0</span></button>
+            <button class="chip" data-source="host" type="button">宿主机 <span id="count-host">0</span></button>
+            <button class="chip" data-source="agent" type="button">Agent 进程 <span id="count-agent">0</span></button>
+            <button class="chip" data-source="model_runtime" type="button">模型推理 <span id="count-model-runtime">0</span></button>
+            <button class="chip" data-source="windows_service" type="button">Windows 服务 <span id="count-windows">0</span></button>
+            <button class="chip" data-source="docker" type="button">Docker <span id="count-docker">0</span></button>
+            <button class="chip" data-source="wsl" type="button">WSL <span id="count-wsl">0</span></button>
+          </div>
+          <label class="risk-toggle"><input id="risk-only" type="checkbox"> 仅看需要复核</label>
+        </div>
+
+        <div class="table-shell">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">服务</th>
+                <th scope="col">PID / 端口</th>
+                <th scope="col">项目 / Agent</th>
+                <th scope="col">负载</th>
+                <th scope="col">时长 / 判断</th>
+                <th scope="col" class="actions-column">操作</th>
+              </tr>
+            </thead>
+            <tbody id="service-body"></tbody>
+          </table>
+          <div class="empty-state" id="empty-state" hidden>
+            <strong>没有匹配的服务</strong>
+            <span>调整搜索词或过滤条件后重试。</span>
+          </div>
+          <div class="loading-state" id="loading-state">正在读取本机端口和进程信息…</div>
+        </div>
+      </section>
+      </section>
+
+      <section class="view-panel planner-view" id="model-planner-view" hidden>
+        <div class="planner-heading">
+          <div>
+            <div class="eyebrow"><span class="eyebrow-square"></span> LOCAL MODEL CAPACITY · 本机模型容量</div>
+            <h2>先算清楚，再下载权重</h2>
+            <p>同时给出物理装载上限、实际可用上限与目标 SLA 上限；Dense 与 MoE 分开计算，结果是范围预测而不是性能承诺。</p>
+          </div>
+          <button class="button" id="hardware-refresh-button" type="button">重新读取硬件</button>
+        </div>
+
+        <section class="hardware-grid" aria-label="本机硬件与运行时">
+          <article class="hardware-card"><span class="card-kicker">CPU</span><strong id="hardware-cpu">正在读取…</strong><small id="hardware-cpu-detail">—</small></article>
+          <article class="hardware-card"><span class="card-kicker">MEMORY</span><strong id="hardware-memory">—</strong><small id="hardware-memory-detail">—</small></article>
+          <article class="hardware-card hardware-card-wide"><span class="card-kicker">ACCELERATOR</span><div id="hardware-gpus" class="hardware-list">正在读取…</div></article>
+          <article class="hardware-card hardware-card-wide hardware-card-runtimes"><span class="card-kicker">LOCAL RUNTIMES</span><div id="runtime-list" class="runtime-list">正在检测…</div></article>
+        </section>
+
+        <section class="planner-workbench">
+          <form id="planner-form" class="planner-form">
+            <div class="planner-form-heading">
+              <div><span class="card-kicker">WORKLOAD</span><h3>你的服务目标</h3></div>
+              <span class="confidence-note">总用户数影响排队波次；峰值并发才直接放大 KV 缓存和吞吐压力。</span>
+            </div>
+            <div class="input-grid">
+              <label class="field"><span>计划用户数</span><input id="planner-users" type="number" min="1" max="100000" value="10" required></label>
+              <label class="field"><span>峰值并发数</span><input id="planner-concurrency" type="number" min="1" max="128" value="2" required></label>
+              <label class="field"><span>平均输入 tokens</span><input id="planner-prompt" type="number" min="16" max="262144" value="1024" required></label>
+              <label class="field"><span>每会话上下文窗口</span><input id="planner-context" type="number" min="512" max="1048576" value="8192" required></label>
+              <label class="field"><span>平均输出 tokens</span><input id="planner-output" type="number" min="1" max="65536" value="512" required></label>
+              <label class="field"><span>目标速度 tokens/s/用户</span><input id="planner-tps" type="number" min="0.5" max="200" step="0.5" value="8" required></label>
+              <label class="field"><span>目标首字延迟（秒）</span><input id="planner-ttft" type="number" min="0.2" max="300" step="0.1" value="5" required></label>
+              <label class="field"><span>选择倾向</span><select id="planner-preference"><option value="balanced">质量/速度平衡</option><option value="performance">吞吐优先</option><option value="quality">质量优先</option><option value="capacity">最大容量优先</option></select></label>
+              <label class="field"><span>运行时</span><select id="planner-runtime"><option value="auto">自动推荐</option><option value="llama.cpp">llama.cpp</option><option value="ollama">Ollama</option><option value="mlx">MLX-LM</option><option value="vllm">vLLM</option><option value="sglang">SGLang</option></select></label>
+              <label class="field"><span>KV 缓存位宽</span><select id="planner-kv"><option value="16">FP16（保守默认）</option><option value="8">8-bit（需运行时支持）</option><option value="4">4-bit（实验性）</option></select></label>
+            </div>
+            <div class="planner-form-actions">
+              <span class="privacy-inline">离线估算；不扫描模型文件，不读取 Key，不自动下载，不执行推荐命令。</span>
+              <button class="button button-primary" id="planner-submit" type="submit">计算可运行上限</button>
+            </div>
+          </form>
+        </section>
+
+        <section id="planner-results" hidden>
+          <div class="ceiling-grid" aria-label="三层容量上限">
+            <article class="ceiling-card physical"><span class="ceiling-index">01</span><div><span class="card-kicker">PHYSICAL CEILING</span><h3>物理装载上限</h3><div id="ceiling-physical" class="ceiling-value">—</div><p>只说明权重、KV 与工作区理论上能否装下，可能很慢或需要混合卸载。</p></div></article>
+            <article class="ceiling-card usable"><span class="ceiling-index">02</span><div><span class="card-kicker">USABLE CEILING</span><h3>实际可用上限</h3><div id="ceiling-usable" class="ceiling-value">—</div><p>当前可装入、至少 Q3、最低 2 tokens/s/用户且 TTFT 不超过 30 秒；不等于满足你的业务 SLA。</p></div></article>
+            <article class="ceiling-card sla"><span class="ceiling-index">03</span><div><span class="card-kicker">SLA CEILING</span><h3>目标 SLA 上限</h3><div id="ceiling-sla" class="ceiling-value">—</div><p>Q4 以上，并同时满足当前空闲内存、并发、速度与首字延迟目标。</p></div></article>
+          </div>
+
+          <div class="planner-insight-grid">
+            <article class="insight-card"><span class="card-kicker">BOTTLENECKS</span><h3>瓶颈与判断</h3><ul id="planner-bottlenecks" class="insight-list"></ul></article>
+            <article class="insight-card"><span class="card-kicker">RECOMMENDED RUNTIME</span><h3 id="runtime-plan-title">推荐运行方案</h3><p id="runtime-plan-meta" class="help-text">—</p><pre id="runtime-command" class="command-block">—</pre><button class="button button-small" id="copy-command-button" type="button">复制命令模板</button></article>
+            <article class="insight-card"><span class="card-kicker">PREDICTION CALIBRATION</span><h3>预测误差与校准</h3><div id="planner-calibration-summary" class="calibration-summary">尚无匹配实测样本。</div></article>
+          </div>
+
+          <section class="candidate-section">
+            <div class="section-heading compact-heading">
+              <div><div class="eyebrow"><span class="eyebrow-square"></span> MODEL OPTIONS · 候选方案</div><h2>按当前偏好选择的量化方案</h2></div>
+              <span class="confidence-note">低置信度结果必须实测；“可装载”不等于“跑得动”。</span>
+            </div>
+            <div class="table-shell candidate-table-shell">
+              <table class="candidate-table">
+                <thead><tr><th>模型 / 架构</th><th>参数 / 量化</th><th>内存拆解</th><th>并发预测</th><th>执行路径</th><th>结论</th></tr></thead>
+                <tbody id="candidate-body"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="calibration-section">
+            <div><span class="card-kicker">LOCAL CALIBRATION</span><h3>用本机 llama-bench 校准</h3><p>可选操作。只接受本地 GGUF 绝对路径，必须输入确认短语；不联网、不下载、不保存绝对路径。</p></div>
+            <div class="calibration-actions"><span id="benchmark-availability" class="source-badge">正在检测</span><button class="button" id="benchmark-button" type="button">运行短基准</button></div>
+            <div id="benchmark-history" class="benchmark-history"></div>
+          </section>
+
+          <details class="assumption-panel"><summary>查看公式边界与全部假设</summary><ol id="planner-assumptions"></ol></details>
+        </section>
+      </section>
+
+      <section class="view-panel health-view" id="health-view" hidden>
+        <div class="planner-heading health-heading">
+          <div>
+            <div class="eyebrow"><span class="eyebrow-square"></span> AI RUNTIME CHECKUP · AI 运行体检</div>
+            <h2>机器健康、模型性能、服务安全，一页闭环</h2>
+            <p>默认只读、被动采集。主动推理短基准、日志/配置检查、快照与回滚均需你逐次选择目标并输入确认短语。</p>
+          </div>
+          <button class="button button-primary" id="health-refresh-button" type="button">立即体检</button>
+        </div>
+
+        <section class="health-overview" aria-label="总体结论">
+          <article class="overall-card" id="health-overall-card"><span class="card-kicker">OVERALL</span><strong id="health-overall">证据采集中</strong><p id="health-overall-summary">正在读取资源与模型服务状态…</p><span class="score-ring" id="health-overall-score">—</span></article>
+          <div class="domain-grid" id="health-domain-grid"></div>
+        </section>
+
+        <section class="health-section">
+          <div class="section-heading compact-heading"><div><div class="eyebrow"><span class="eyebrow-square"></span> LIVE RESOURCES · 实时资源</div><h2>本机硬件状态与运行成本</h2></div><span class="confidence-note">“不可用”表示系统/厂商未向当前非提权进程暴露传感器，不以估算代替实测。</span></div>
+          <div class="resource-grid">
+            <article class="resource-card"><span class="card-kicker">CPU</span><strong id="live-cpu">—</strong><progress id="live-cpu-progress" max="100" value="0"></progress><small id="live-cpu-detail">—</small></article>
+            <article class="resource-card"><span class="card-kicker">RAM</span><strong id="live-memory">—</strong><progress id="live-memory-progress" max="100" value="0"></progress><small id="live-memory-detail">—</small></article>
+            <article class="resource-card"><span class="card-kicker">POWER / COST</span><strong id="live-power">—</strong><small id="live-cost">—</small></article>
+            <article class="resource-card"><span class="card-kicker">NETWORK</span><strong id="live-network">—</strong><small id="live-network-detail">—</small></article>
+          </div>
+          <div class="telemetry-split">
+            <article class="health-panel"><div class="panel-title"><span class="card-kicker">GPU / VRAM</span><strong>加速器</strong></div><div id="live-gpus" class="telemetry-list"></div></article>
+            <article class="health-panel"><div class="panel-title"><span class="card-kicker">STORAGE</span><strong>模型磁盘余量</strong></div><div id="live-disks" class="telemetry-list"></div></article>
+            <article class="health-panel"><div class="panel-title"><span class="card-kicker">THERMAL</span><strong>温度与风扇</strong></div><div id="live-sensors" class="telemetry-list"></div></article>
+          </div>
+          <article class="health-panel service-resource-panel">
+            <div class="panel-title"><span class="card-kicker">PER-SERVICE RESOURCES</span><strong>按服务 CPU、RAM 与进程级显存</strong></div>
+            <div class="table-shell compact-resource-table"><table><thead><tr><th>服务</th><th>PID / 运行时</th><th>CPU</th><th>RAM / RSS</th><th>进程级显存</th><th>证据状态</th></tr></thead><tbody id="service-resource-body"></tbody></table></div>
+            <p class="confidence-note" id="service-resource-limitation">Docker/WSL PID 命名空间不同；无法可靠归属时保持未知。</p>
+          </article>
+        </section>
+
+        <section class="health-section">
+          <div class="section-heading compact-heading"><div><div class="eyebrow"><span class="eyebrow-square"></span> MODEL SERVICES · 模型服务</div><h2>加载、性能、并发、上下文与暴露面</h2></div><span class="confidence-note">被动指标来自运行时只读 API/metrics；没有指标时不推断 TPS 或 TTFT。</span></div>
+          <div class="table-shell health-table-shell">
+            <table class="runtime-health-table">
+              <thead><tr><th>服务 / 模型</th><th>加载 / 配置</th><th>实际性能</th><th>并发 / 上下文</th><th>安全 / 网络</th><th>稳定性</th><th>显式操作</th></tr></thead>
+              <tbody id="runtime-health-body"></tbody>
+            </table>
+            <div class="empty-state" id="runtime-health-empty" hidden><strong>未发现可探测的模型服务</strong><span>启动 Ollama、llama.cpp、vLLM、SGLang、LM Studio、TGI、KoboldCpp、MLX-LM 或 ComfyUI 后刷新。</span></div>
+          </div>
+        </section>
+
+        <section class="health-section health-two-column">
+          <article class="health-panel"><div class="panel-title"><span class="card-kicker">SECURITY POSTURE</span><strong>监听、认证、防火墙与反向代理</strong></div><div id="security-posture" class="telemetry-list"></div></article>
+          <article class="health-panel"><div class="panel-title"><span class="card-kicker">NETWORK / NODES</span><strong>联网与手工受信节点</strong></div><div id="network-posture" class="telemetry-list"></div></article>
+        </section>
+
+        <section class="health-section">
+          <div class="section-heading compact-heading"><div><div class="eyebrow"><span class="eyebrow-square"></span> FINDINGS · 处置建议</div><h2>证据驱动的风险清单</h2></div></div>
+          <div id="health-findings" class="finding-list"></div>
+        </section>
+
+        <section class="health-section snapshot-section">
+          <div class="section-heading compact-heading"><div><div class="eyebrow"><span class="eyebrow-square"></span> BACKUP MANIFEST · 版本与回滚</div><h2>配置留副本，大模型只建清单</h2></div><span class="confidence-note">不自动复制几十 GB 权重；超过 512 MiB 默认跳过完整 SHA-256，避免长时间占满磁盘 I/O。</span></div>
+          <div class="snapshot-grid">
+            <form id="snapshot-form" class="health-panel compact-form">
+              <label class="field"><span>文件绝对路径（每行一个；最多 100 项）</span><textarea id="snapshot-paths" rows="5" placeholder="E:\models\model.gguf&#10;E:\models\Modelfile"></textarea></label>
+              <label class="field"><span>输入确认短语 SNAPSHOT</span><input id="snapshot-confirmation" autocomplete="off" spellcheck="false"></label>
+              <p class="help-text">小于 2 MiB 的 JSON/YAML/TOML/INI/CONF/Modelfile 会保存本地私有副本并支持显式回滚；模型权重只记录名称、大小、时间与可选哈希。</p>
+              <button class="button button-primary" id="snapshot-submit" type="submit">创建本地清单</button>
+            </form>
+            <article class="health-panel"><div class="panel-title"><span class="card-kicker">HISTORY</span><strong>快照历史</strong></div><div id="snapshot-history" class="snapshot-history">正在读取…</div></article>
+          </div>
+        </section>
+
+        <details class="assumption-panel health-limitations"><summary>查看本次体检的证据边界与未知项</summary><ul id="health-limitations"></ul></details>
+      </section>
+
+      <section class="view-panel advisor-view" id="advisor-view" hidden>
+        <div class="planner-heading health-heading">
+          <div>
+            <div class="eyebrow"><span class="eyebrow-square"></span> LOCAL OPTIMIZATION LOOP · 本机优化闭环</div>
+            <h2>从故障证据到引擎选型，再用同负载实测回验</h2>
+            <p>读取本机硬件、运行时、脱敏日志事件和基准历史；生成建议但不自动安装引擎、不改驱动、不改模型配置。</p>
+          </div>
+          <button class="button button-primary" id="advisor-refresh-button" type="button">重新生成建议</button>
+        </div>
+
+        <ol class="workflow-strip" aria-label="优化闭环">
+          <li><strong>1</strong><span>检测</span></li><li><strong>2</strong><span>诊断</span></li><li><strong>3</strong><span>建议</span></li><li><strong>4</strong><span>基准</span></li><li><strong>5</strong><span>监控</span></li><li><strong>6</strong><span>回滚</span></li>
+        </ol>
+
+        <section class="health-section advisor-layout">
+          <form id="advisor-form" class="health-panel compact-form advisor-form">
+            <div class="panel-title"><span class="card-kicker">WORKLOAD FIT</span><strong>引擎选择条件</strong></div>
+            <label class="field"><span>模型权重格式</span><select id="advisor-format"><option value="auto">自动 / 尚未确定</option><option value="gguf">GGUF</option><option value="ollama">Ollama 包</option><option value="safetensors">Safetensors / Hugging Face</option><option value="mlx">MLX</option><option value="gptq_awq">GPTQ / AWQ</option><option value="exl2">EXL2</option></select></label>
+            <label class="field"><span>首要目标</span><select id="advisor-priority"><option value="balanced">综合平衡</option><option value="ease">易用性优先</option><option value="throughput">吞吐优先</option><option value="latency">低延迟优先</option><option value="memory">内存效率优先</option><option value="power">功耗优先</option></select></label>
+            <label class="field"><span>目标并发</span><input id="advisor-concurrency" type="number" min="1" max="256" value="4"></label>
+            <label class="field"><span>目标上下文 tokens</span><input id="advisor-context" type="number" min="512" max="1000000" value="8192"></label>
+            <fieldset class="feature-field"><legend>需要的能力</legend><label><input type="checkbox" name="advisor-feature" value="tools"> 工具调用</label><label><input type="checkbox" name="advisor-feature" value="vision"> 视觉</label><label><input type="checkbox" name="advisor-feature" value="audio"> 语音</label><label><input type="checkbox" name="advisor-feature" value="lora"> LoRA</label><label><input type="checkbox" name="advisor-feature" value="structured"> 结构化输出</label></fieldset>
+            <label class="check-field"><input id="advisor-wsl" type="checkbox"><span>Windows 可接受 WSL2 路径</span></label>
+            <label class="check-field"><input id="advisor-docker" type="checkbox"><span>可接受 Docker 路径</span></label>
+            <button class="button button-primary" id="advisor-submit" type="submit">计算兼容矩阵</button>
+          </form>
+          <article class="health-panel advisor-results-panel">
+            <div class="panel-title"><span class="card-kicker">RECOMMENDED ENGINES</span><strong>兼容性与工作负载拟合</strong></div>
+            <div id="engine-top3" class="engine-top3"><span class="confidence-note">正在读取本机环境…</span></div>
+            <p id="engine-conclusion" class="confidence-note"></p>
+          </article>
+        </section>
+
+        <section class="health-section">
+          <div class="section-heading compact-heading"><div><div class="eyebrow"><span class="eyebrow-square"></span> COMPATIBILITY MATRIX · 全部候选</div><h2>同时展示兼容、预览与被阻断的引擎</h2></div><span class="confidence-note">版本、驱动或 Compute Capability 未读到时明确标记未知。</span></div>
+          <div class="table-shell engine-matrix-shell"><table><thead><tr><th>引擎</th><th>状态 / 分数</th><th>格式 / 平台 / 加速器</th><th>本机检测</th><th>阻断与解除步骤</th></tr></thead><tbody id="engine-candidate-body"></tbody></table></div>
+        </section>
+
+        <section class="health-section">
+          <div class="section-heading compact-heading"><div><div class="eyebrow"><span class="eyebrow-square"></span> EVIDENCE-BASED TUNING · 硬件优化</div><h2>每条建议都带证据、动作、代价与回验方式</h2></div><span id="advisor-summary" class="source-badge">正在计算</span></div>
+          <div id="advisor-recommendations" class="recommendation-grid"></div>
+          <details class="assumption-panel"><summary>查看缺失证据与方法边界</summary><ul id="advisor-unknowns"></ul></details>
+        </section>
+
+        <section class="health-section">
+          <div class="section-heading compact-heading"><div><div class="eyebrow"><span class="eyebrow-square"></span> FAIR BENCHMARK · 可比基准</div><h2>只比较同模型、同并发、同上下文与同输出长度</h2></div></div>
+          <div id="benchmark-comparison" class="benchmark-comparison"><span class="confidence-note">暂无可比样本。</span></div>
+        </section>
+
+        <section class="health-section log-monitor-section">
+          <div class="section-heading compact-heading"><div><div class="eyebrow"><span class="eyebrow-square"></span> REDACTED LOG EVENTS · 脱敏日志事件</div><h2>持续观察 OOM、加速器错误、加载、超时与崩溃</h2></div><span id="log-monitor-count" class="source-badge">0 个活动监控</span></div>
+          <div class="log-monitor-layout">
+            <form id="log-watch-form" class="health-panel compact-form">
+              <div class="warning-box">只读取你明确选择的本机日志；拒绝 .env、密钥和凭据文件。原始日志不入库，界面只展示脱敏短事件。</div>
+              <label class="field"><span>模型服务</span><select id="log-watch-service" required></select></label>
+              <label class="field"><span>日志绝对路径</span><input id="log-watch-path" autocomplete="off" spellcheck="false" placeholder="E:\logs\server.log" required></label>
+              <label class="field"><span id="log-watch-prompt">输入确认短语 WATCH &lt;PID&gt;</span><input id="log-watch-confirmation" autocomplete="off" spellcheck="false" required></label>
+              <button class="button button-primary" id="log-watch-submit" type="submit">开始监控</button>
+            </form>
+            <article class="health-panel"><div class="panel-title"><span class="card-kicker">ACTIVE WATCHES</span><strong>监控游标</strong></div><div id="log-watches" class="log-watch-list"></div></article>
+          </div>
+          <div class="filter-bar log-filter-bar"><label class="field"><span>严重度</span><select id="log-filter-severity"><option value="">全部</option><option value="critical">critical</option><option value="high">high</option><option value="medium">medium</option><option value="info">info</option></select></label><label class="field"><span>事件代码</span><input id="log-filter-code" placeholder="例如 CUDA_OOM"></label><button class="button" id="log-filter-apply" type="button">筛选事件</button></div>
+          <div class="table-shell log-event-shell"><table class="runtime-health-table"><thead><tr><th>时间 / 严重度</th><th>运行时 / 类别</th><th>事件</th><th>次数</th></tr></thead><tbody id="log-event-body"></tbody></table><div class="empty-state" id="log-event-empty"><strong>暂无结构化日志事件</strong><span>启用监控后，VSG 从日志尾部开始解析并在本机保存脱敏事件。</span></div></div>
+        </section>
+      </section>
+
+      <section class="view-panel operations-view" id="operations-view" hidden>
+        <div class="planner-heading health-heading">
+          <div><div class="eyebrow"><span class="eyebrow-square"></span> EVENTS &amp; MODEL ASSETS · 事件与模型资产</div><h2>从“发生了什么”回到“哪个项目、哪个 Agent、哪个模型”</h2><p>时间线、网络拓扑、归属纠正和模型盘点全部留在本机。远端 IP 仅显示当前连接，不写入历史。</p></div>
+          <button class="button button-primary" id="operations-refresh-button" type="button">刷新事件与资产</button>
+        </div>
+
+        <section class="operations-overview">
+          <article class="hardware-card"><span class="card-kicker">INCIDENTS / 24H</span><strong id="operations-incident-health">—</strong><small id="operations-incident-count">正在读取</small></article>
+          <article class="hardware-card"><span class="card-kicker">NETWORK</span><strong id="operations-network-count">—</strong><small id="operations-exposure-count">正在读取</small></article>
+          <article class="hardware-card"><span class="card-kicker">LOCAL MODELS</span><strong id="operations-model-count">—</strong><small id="operations-model-size">尚未显式扫描</small></article>
+          <article class="hardware-card"><span class="card-kicker">ATTRIBUTION RULES</span><strong id="operations-rule-count">—</strong><small>本机规则与项目 .vsg.yaml</small></article>
+        </section>
+
+        <section class="health-section operations-two-column">
+          <form id="model-inventory-form" class="health-panel compact-form">
+            <div class="panel-title"><span class="card-kicker">EXPLICIT MODEL SCAN</span><strong>盘点明确选择的模型目录</strong></div>
+            <div class="warning-box">只扫描你输入的目录；跳过符号链接，最多 5000 个文件、6 层。不会下载、删除、上传或修改权重。</div>
+            <label class="field"><span>模型目录绝对路径</span><input id="model-inventory-root" autocomplete="off" spellcheck="false" placeholder="E:\models" required></label>
+            <label class="field"><span>输入确认短语 SCAN MODELS</span><input id="model-inventory-confirmation" autocomplete="off" spellcheck="false" required></label>
+            <button class="button button-primary" id="model-inventory-submit" type="submit">开始本地盘点</button>
+          </form>
+          <article class="health-panel"><div class="panel-title"><span class="card-kicker">SCAN SUMMARY</span><strong>最近一次盘点</strong></div><div id="model-inventory-summary" class="telemetry-list"><span class="confidence-note">尚未扫描模型目录。</span></div></article>
+        </section>
+
+        <section class="health-section">
+          <div class="section-heading compact-heading"><div><div class="eyebrow"><span class="eyebrow-square"></span> DETECTED MODELS · 已盘点模型</div><h2>格式、量化、Dense / MoE、权重装载提示与引擎入口</h2></div><span class="confidence-note">“权重可装下”不含 KV 缓存、并发和性能承诺。</span></div>
+          <div class="table-shell model-inventory-shell"><table><thead><tr><th>模型 / 位置</th><th>格式 / 量化</th><th>架构 / 类型</th><th>权重</th><th>当前装载提示</th><th>下一步</th></tr></thead><tbody id="model-inventory-body"></tbody></table><div class="empty-state" id="model-inventory-empty"><strong>暂无模型资产</strong><span>选择具体模型目录并输入 SCAN MODELS。</span></div></div>
+        </section>
+
+        <section class="health-section operations-two-column">
+          <article class="health-panel"><div class="panel-title"><span class="card-kicker">NETWORK TOPOLOGY</span><strong>监听与当前远端连接</strong></div><div id="network-topology-list" class="telemetry-list"></div></article>
+          <article class="health-panel"><div class="panel-title"><span class="card-kicker">ATTRIBUTION RULES</span><strong>用户纠正规则</strong></div><div id="attribution-rule-list" class="rule-list"></div></article>
+        </section>
+
+        <section class="health-section">
+          <div class="section-heading compact-heading"><div><div class="eyebrow"><span class="eyebrow-square"></span> CORRELATED TIMELINE · 关联时间线</div><h2>服务生命周期、暴露变化、网络连接、资源与日志事件</h2></div></div>
+          <div class="filter-bar timeline-filter-bar"><label class="field"><span>时间范围</span><select id="timeline-hours"><option value="1">1 小时</option><option value="24" selected>24 小时</option><option value="168">7 天</option><option value="720">30 天</option></select></label><label class="field"><span>类别</span><select id="timeline-category"><option value="">全部</option><option value="lifecycle">lifecycle</option><option value="security">security</option><option value="network">network</option><option value="resource">resource</option><option value="attribution">attribution</option></select></label><button class="button" id="timeline-filter-apply" type="button">筛选时间线</button></div>
+          <div id="timeline-list" class="timeline-list"></div>
+        </section>
+
+        <details class="assumption-panel history-clear-panel"><summary>本机历史数据管理</summary><form id="history-clear-form" class="compact-form"><fieldset class="feature-field"><legend>选择清除范围</legend><label><input type="checkbox" name="history-category" value="timeline" checked> 时间线</label><label><input type="checkbox" name="history-category" value="telemetry" checked> 遥测样本</label><label><input type="checkbox" name="history-category" value="log_events"> 脱敏日志事件</label><label><input type="checkbox" name="history-category" value="model_inventory"> 模型盘点历史</label><label><input type="checkbox" name="history-category" value="benchmarks"> 模型基准</label><label><input type="checkbox" name="history-category" value="service_benchmarks"> 服务基准</label><label><input type="checkbox" name="history-category" value="stop_verifications"> 停止验证</label><label><input type="checkbox" name="history-category" value="impact_feedback"> 成效确认</label><label><input type="checkbox" name="history-category" value="observations"> 服务观察历史</label><label><input type="checkbox" name="history-category" value="audit"> 操作记录</label></fieldset><label class="field"><span>输入确认短语 CLEAR HISTORY</span><input id="history-clear-confirmation" autocomplete="off" spellcheck="false"></label><button class="button button-danger" type="submit">清除所选本机历史</button></form></details>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="detail-dialog" class="modal modal-wide">
+    <form method="dialog" class="modal-frame">
+      <header><div><span class="modal-kicker">SERVICE EVIDENCE</span><h2 id="detail-title">服务详情</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="关闭">×</button></header>
+      <div class="modal-content" id="detail-content"></div>
+      <footer><button class="button" value="cancel">关闭</button></footer>
+    </form>
+  </dialog>
+
+  <dialog id="impact-report-dialog" class="modal modal-wide">
+    <form method="dialog" class="modal-frame" id="impact-report-form">
+      <header><div><span class="modal-kicker">LOCAL IMPACT EVIDENCE</span><h2>本机成效报告</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="关闭">×</button></header>
+      <div class="modal-content">
+        <div class="privacy-note"><strong>只生成本机聚合证据</strong><span>预览和导出均不包含 PID、路径、IP、命令、会话 ID、日志或模型响应。不会自动上传；导出文件仍需人工复核后再对外分享。</span></div>
+        <div id="impact-report-summary" class="detail-grid impact-report-grid"><span class="confidence-note">正在汇总保留期内的本机证据…</span></div>
+        <div class="warning-box impact-evidence-warning">该报告是单机自报证据，不能证明独立用户数、公开仓库采用量、下载量或外部项目使用情况。</div>
+        <label class="field impact-export-field"><span>如需下载脱敏 JSON，请输入确认短语 EXPORT REPORT</span><input id="impact-export-confirmation" autocomplete="off" spellcheck="false"></label>
+      </div>
+      <footer><button class="button" value="cancel" type="button" id="impact-report-cancel">关闭</button><button class="button button-primary" id="impact-report-export" type="submit">导出脱敏 JSON</button></footer>
+    </form>
+  </dialog>
+
+  <dialog id="stop-dialog" class="modal modal-wide">
+    <form method="dialog" class="modal-frame" id="stop-form">
+      <header><div><span class="modal-kicker danger-text">DESTRUCTIVE ACTION</span><h2>停止进程树</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="关闭">×</button></header>
+      <div class="modal-content">
+        <div class="warning-box" id="stop-summary">正在生成关停评估…</div>
+        <div class="stop-assessment" id="stop-assessment"></div>
+        <label class="field" id="stop-confirmation-field"><span id="stop-prompt">请输入确认短语</span><input id="stop-confirmation" autocomplete="off" spellcheck="false"></label>
+        <p class="help-text">系统将在执行前再次校验 PID、启动时间、保护名单和目标来源。无法撤销。</p>
+        <div class="stop-verification" id="stop-verification" hidden></div>
+      </div>
+      <footer><button class="button" value="cancel" type="button" id="stop-cancel">关闭</button><button class="button button-danger" id="stop-submit" type="submit" disabled>确认停止</button></footer>
+    </form>
+  </dialog>
+
+  <dialog id="attribution-dialog" class="modal modal-wide">
+    <form method="dialog" class="modal-frame" id="attribution-form">
+      <header><div><span class="modal-kicker">LOCAL ATTRIBUTION CORRECTION</span><h2>纠正服务归属</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="关闭">×</button></header>
+      <div class="modal-content settings-grid">
+        <div class="warning-box field-full" id="attribution-summary">将为当前服务指纹创建一条本机规则。</div>
+        <label class="field"><span>显示名称</span><input id="attribution-service-name" maxlength="160"></label>
+        <label class="field"><span>Agent 来源</span><input id="attribution-agent" maxlength="160" placeholder="Codex / Claude Code / OpenCode / Hermes"></label>
+        <label class="field"><span>项目名称</span><input id="attribution-project-name" maxlength="160"></label>
+        <label class="field"><span>项目绝对路径</span><input id="attribution-project-path" maxlength="1024" placeholder="必须位于设置中的项目根目录"></label>
+        <label class="check-field"><input id="attribution-expected" type="checkbox"><span>这是预期服务</span></label>
+        <label class="check-field"><input id="attribution-protected" type="checkbox"><span>保护，禁止从控制台停止</span></label>
+      </div>
+      <footer><button class="button" value="cancel" type="button" id="attribution-cancel">取消</button><button class="button button-primary" type="submit">保存本机纠正规则</button></footer>
+    </form>
+  </dialog>
+
+  <dialog id="confirmation-dialog" class="modal">
+    <form method="dialog" class="modal-frame" id="confirmation-form">
+      <header><div><span class="modal-kicker danger-text">EXPLICIT LOCAL ACTION</span><h2 id="confirmation-title">确认本机操作</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="关闭">×</button></header>
+      <div class="modal-content"><div class="warning-box" id="confirmation-summary"></div><label class="field"><span id="confirmation-prompt">请输入确认短语</span><input id="confirmation-input" autocomplete="off" spellcheck="false" required></label></div>
+      <footer><button class="button" value="cancel" type="button" id="confirmation-cancel">取消</button><button class="button button-danger" type="submit">确认执行</button></footer>
+    </form>
+  </dialog>
+
+  <dialog id="settings-dialog" class="modal modal-wide">
+    <form method="dialog" class="modal-frame" id="settings-form">
+      <header><div><span class="modal-kicker">LOCAL SETTINGS</span><h2>本机扫描设置</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="关闭">×</button></header>
+      <div class="modal-content settings-grid">
+        <label class="field field-full"><span>项目根目录（每行一个绝对路径）</span><textarea id="setting-roots" rows="5"></textarea></label>
+        <label class="field"><span>刷新间隔（秒）</span><input id="setting-refresh" type="number" min="2" max="30"></label>
+        <label class="field"><span>运行时长关注阈值（小时）</span><input id="setting-hours" type="number" min="1" max="720"></label>
+        <label class="field"><span>建议复核分数</span><input id="setting-review" type="number" min="1" max="99"></label>
+        <label class="field"><span>疑似遗留分数</span><input id="setting-stale" type="number" min="2" max="100"></label>
+        <label class="check-field"><input id="setting-udp" type="checkbox"><span>采集 UDP 绑定</span></label>
+        <label class="check-field" id="setting-windows-field"><input id="setting-windows" type="checkbox"><span>映射 Windows 服务</span></label>
+        <label class="check-field"><input id="setting-docker" type="checkbox"><span>展示 Docker 容器</span></label>
+        <label class="check-field" id="setting-wsl-field"><input id="setting-wsl" type="checkbox"><span>展示运行中的 WSL</span></label>
+        <label class="check-field"><input id="setting-runtime-probes" type="checkbox"><span>启用模型运行时只读探测</span></label>
+        <label class="field"><span>低磁盘空间阈值（GiB）</span><input id="setting-low-disk" type="number" min="1" max="4096"></label>
+        <label class="field"><span>脱敏日志事件保留天数</span><input id="setting-log-retention" type="number" min="1" max="90"></label>
+        <label class="field"><span>电价（每 kWh，仅用于 GPU 实测功耗积分）</span><input id="setting-electricity" type="number" min="0" max="100" step="0.01"></label>
+        <label class="field field-full"><span>手工受信节点（每行 http://私网主机:端口；最多 8 项）</span><textarea id="setting-trusted-nodes" rows="3" placeholder="http://192.168.1.20:8000"></textarea></label>
+        <div class="privacy-note field-full"><strong>隐私边界</strong><span>控制台仅监听 127.0.0.1。命令中的 Key、Token、密码、Cookie 等常见敏感参数在进入界面前即被脱敏。</span></div>
+      </div>
+      <footer><button class="button" value="cancel" type="button" id="settings-cancel">取消</button><button class="button button-primary" type="submit">保存并重新扫描</button></footer>
+    </form>
+  </dialog>
+
+  <dialog id="audit-dialog" class="modal modal-wide">
+    <form method="dialog" class="modal-frame">
+      <header><div><span class="modal-kicker">LOCAL AUDIT TRAIL</span><h2>操作记录</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="关闭">×</button></header>
+      <div class="modal-content"><div class="audit-list" id="audit-list"></div></div>
+      <footer><button class="button" value="cancel">关闭</button></footer>
+    </form>
+  </dialog>
+
+  <dialog id="benchmark-dialog" class="modal modal-wide">
+    <form method="dialog" class="modal-frame" id="benchmark-form">
+      <header><div><span class="modal-kicker">EXPLICIT LOCAL ACTION</span><h2>运行 llama-bench 短基准</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="关闭">×</button></header>
+      <div class="modal-content settings-grid">
+        <div class="warning-box field-full">该操作会短时占用 CPU/GPU 和内存。VSG 不会下载模型，也不会把模型路径写入数据库；开始后最长 300 秒超时。</div>
+        <label class="field"><span>目录模型</span><select id="benchmark-model" required></select></label>
+        <label class="field"><span>GGUF 量化</span><select id="benchmark-quant" required><option value="Q3_K_M">Q3_K_M</option><option value="Q4_K_M" selected>Q4_K_M</option><option value="Q5_K_M">Q5_K_M</option><option value="Q6_K">Q6_K</option><option value="Q8_0">Q8_0</option><option value="FP16">FP16</option><option value="Q2_K">Q2_K</option></select></label>
+        <label class="field field-full"><span>本地 GGUF 绝对路径</span><input id="benchmark-path" type="text" autocomplete="off" spellcheck="false" placeholder="E:\models\model.Q4_K_M.gguf" required></label>
+        <label class="field field-full"><span>输入确认短语 BENCHMARK</span><input id="benchmark-confirmation" type="text" autocomplete="off" spellcheck="false" required></label>
+      </div>
+      <footer><button class="button" value="cancel" type="button" id="benchmark-cancel">取消</button><button class="button button-primary" id="benchmark-submit" type="submit">确认运行短基准</button></footer>
+    </form>
+  </dialog>
+
+  <dialog id="service-benchmark-dialog" class="modal modal-wide">
+    <form method="dialog" class="modal-frame" id="service-benchmark-form">
+      <header><div><span class="modal-kicker">EXPLICIT SYNTHETIC INFERENCE</span><h2 id="service-benchmark-title">模型服务短基准</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="关闭">×</button></header>
+      <div class="modal-content settings-grid">
+        <div class="warning-box field-full">会向所选本机模型发送不含用户数据的合成提示词，短时占用 CPU/GPU/内存。首版硬上限：并发 4、上下文 4096、输出 64；系统内存超过 85% 时拒绝运行，不会主动试探到 OOM。</div>
+        <label class="field field-full"><span>已加载模型</span><input id="service-benchmark-model" autocomplete="off" spellcheck="false"></label>
+        <label class="field"><span>并发请求数</span><input id="service-benchmark-concurrency" type="number" min="1" max="4" value="1"></label>
+        <label class="field"><span>请求上下文 tokens</span><input id="service-benchmark-context" type="number" min="128" max="4096" value="512"></label>
+        <label class="field"><span>输出 tokens</span><input id="service-benchmark-output" type="number" min="1" max="64" value="32"></label>
+        <label class="field"><span id="service-benchmark-prompt">输入确认短语</span><input id="service-benchmark-confirmation" autocomplete="off" spellcheck="false"></label>
+        <div class="detail-card field-full" id="service-benchmark-result" hidden></div>
+      </div>
+      <footer><button class="button" type="button" id="service-benchmark-cancel">取消</button><button class="button button-primary" id="service-benchmark-submit" type="submit">确认运行</button></footer>
+    </form>
+  </dialog>
+
+  <dialog id="workload-matrix-dialog" class="modal modal-wide">
+    <form method="dialog" class="modal-frame" id="workload-matrix-form">
+      <header><div><span class="modal-kicker">PREVIEWED CANCELLABLE WORKLOAD</span><h2 id="workload-matrix-title">分级工作负载矩阵</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="关闭">×</button></header>
+      <div class="modal-content settings-grid">
+        <div class="warning-box field-full">计划固定为单请求、双并发和四并发三步。开始前完整预览；每步重查 RAM、VRAM、温度和磁盘护栏。中止采用协作式取消，已经发出的本机请求可能正常结束。</div>
+        <label class="field"><span>容量目录映射（可选）</span><select id="workload-matrix-model"><option value="">不映射，仅记录运行时性能</option></select></label>
+        <label class="field"><span>量化版本</span><select id="workload-matrix-quant"><option value="Q3_K_M">Q3_K_M</option><option value="Q4_K_M" selected>Q4_K_M</option><option value="Q5_K_M">Q5_K_M</option><option value="Q6_K">Q6_K</option><option value="Q8_0">Q8_0</option><option value="FP16">FP16</option><option value="Q2_K">Q2_K</option></select></label>
+        <button class="button field-full" id="workload-matrix-preview" type="button">生成或刷新预览</button>
+        <div class="matrix-plan field-full" id="workload-matrix-plan"><span class="confidence-note">请选择映射后生成预览。</span></div>
+        <label class="field field-full" id="workload-matrix-confirmation-field" hidden><span id="workload-matrix-prompt">输入确认短语</span><input id="workload-matrix-confirmation" autocomplete="off" spellcheck="false"></label>
+        <div class="matrix-status field-full" id="workload-matrix-status" hidden></div>
+      </div>
+      <footer><button class="button" type="button" id="workload-matrix-close">关闭</button><button class="button button-danger" type="button" id="workload-matrix-cancel" hidden>中止剩余负载</button><button class="button button-primary" id="workload-matrix-start" type="submit" disabled>确认运行矩阵</button></footer>
+    </form>
+  </dialog>
+
+  <dialog id="diagnostic-dialog" class="modal modal-wide">
+    <form method="dialog" class="modal-frame" id="diagnostic-form">
+      <header><div><span class="modal-kicker">OPT-IN REDACTED INSPECTION</span><h2 id="diagnostic-title">日志 / 配置检查</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="关闭">×</button></header>
+      <div class="modal-content settings-grid">
+        <div class="warning-box field-full">仅在你明确选择文件后读取；拒绝 .env、私钥和凭据文件。返回内容会脱敏，不保存原始文件、绝对路径或密钥值。</div>
+        <label class="field"><span>检查类型</span><select id="diagnostic-mode"><option value="log">日志错误 / OOM / CUDA</option><option value="config">配置语法 / 关键项</option></select></label>
+        <label class="field"><span id="diagnostic-prompt">输入确认短语</span><input id="diagnostic-confirmation" autocomplete="off" spellcheck="false"></label>
+        <label class="field field-full"><span>本地文件绝对路径</span><input id="diagnostic-path" autocomplete="off" spellcheck="false"></label>
+        <pre class="diagnostic-result field-full" id="diagnostic-result" hidden></pre>
+      </div>
+      <footer><button class="button" type="button" id="diagnostic-cancel">取消</button><button class="button button-primary" id="diagnostic-submit" type="submit">脱敏检查</button></footer>
+    </form>
+  </dialog>
+
+  <dialog id="restore-dialog" class="modal">
+    <form method="dialog" class="modal-frame" id="restore-form">
+      <header><div><span class="modal-kicker danger-text">EXPLICIT RESTORE</span><h2>回滚配置副本</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="关闭">×</button></header>
+      <div class="modal-content"><div class="warning-box" id="restore-summary"></div><label class="field"><span id="restore-prompt">输入确认短语</span><input id="restore-confirmation" autocomplete="off" spellcheck="false"></label><p class="help-text">覆盖前会在该快照目录再保存一份当前目标文件；VSG 不自动重启相关服务。</p></div>
+      <footer><button class="button" type="button" id="restore-cancel">取消</button><button class="button button-danger" type="submit">确认回滚</button></footer>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+  <script src="/assets/i18n.js" defer></script>
+  <script src="/assets/app.js" defer></script>
+</body>
+</html>

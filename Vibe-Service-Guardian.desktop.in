@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.5
+Type=Application
+Name=Vibe Service Guardian
+Name[zh_CN]=Vibe 服务守望
+Comment=Local service, port, model-runtime, and hardware monitor
+Comment[zh_CN]=本机服务、端口、模型运行时与硬件监控
+Exec="@VSG_EXEC@"
+Path=@VSG_PATH@
+Terminal=false
+Categories=Development;System;Monitor;
+StartupNotify=true

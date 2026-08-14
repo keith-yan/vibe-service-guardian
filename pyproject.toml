@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools==84.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vibe-service-guardian"
+version = "0.8.3"
+description = "Windows, macOS, and Linux local service attribution and stale development server detection"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Vibe Service Guardian contributors" }]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: System :: Monitoring",
+]
+dependencies = [
+  "psutil==7.2.2",
+]
+
+[project.urls]
+Homepage = "https://github.com/keith-yan/vibe-service-guardian"
+Repository = "https://github.com/keith-yan/vibe-service-guardian.git"
+Issues = "https://github.com/keith-yan/vibe-service-guardian/issues"
+Changelog = "https://github.com/keith-yan/vibe-service-guardian/blob/main/CHANGELOG.md"
+
+[project.scripts]
+vsg = "vsg.app:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["vsg*"]
+
+[tool.setuptools.package-data]
+vsg = ["web/*.html", "web/*.css", "web/*.js", "catalog/*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py310"
+exclude = [".venv", "build", "dist", "release"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "B"]

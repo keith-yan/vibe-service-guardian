@@ -1,0 +1,25 @@
+name: Feature request
+description: 提议新的采集器、Agent 适配或控制台能力。
+title: "[Feature] "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 要解决的问题
+      description: 请描述用户现在无法完成的任务，而不是只给出方案名。
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 可验证的本地证据源
+      description: 说明进程、公开 schema、CLI 或系统 API；不要提交私密数据样本。
+    validations:
+      required: true
+  - type: textarea
+    id: safety
+    attributes:
+      label: 权限、隐私与误判风险
+    validations:
+      required: true

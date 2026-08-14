@@ -1,0 +1,46 @@
+name: Bug report
+description: 报告可复现的功能错误；请勿附带密钥、聊天内容或完整本机数据库。
+title: "[Bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: 请先删除用户名、项目路径、Token、命令参数中的敏感信息。
+  - type: input
+    id: version
+    attributes:
+      label: VSG 版本
+      placeholder: 例如 0.2.1
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: 平台
+      options:
+        - Windows 11 x64
+        - Windows 10 x64
+        - macOS Apple Silicon
+        - macOS Intel
+        - Linux（实验性）
+        - 其他
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 使用最小、已脱敏的步骤。
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期与实际结果
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 已脱敏证据
+      description: 不要上传 data 目录、数据库、密钥、完整命令行或会话文件。

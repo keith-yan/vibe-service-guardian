@@ -1,0 +1,40 @@
+{
+  "generator": "scripts/Requirement-Locks.py",
+  "lock_hashes": {
+    "audit-linux-py312.txt": "b300c23a1a482bb067e6bae719694280966762e274bd7ef3781ae754471ec1c1",
+    "bootstrap-py3.txt": "f61fa9a257ee614c9afb74d34f05fda610624233a672cbe34d99d3a5cdcd6e2f",
+    "build-linux-py310.txt": "70273f1d341b4a652f52503bcff41bc93139309c3ad30c7504ea1164b090dfc9",
+    "build-linux-py311.txt": "2ea8e8ca30b1f5e4a24ea42c2313d8a44f194946b718cb721f6f9994ad8f23a2",
+    "build-linux-py312.txt": "da171171d5b4ddc96f9fd6be7d59e7005c3344d9afdd56e202104fc56a311048",
+    "build-macos-py310.txt": "e668f6e6ea5c5a1830c9a8a4d8a913f72301bfc7b8530f4d6cad812464255c8b",
+    "build-macos-py311.txt": "6ec784b3c7910ed49a1fb36d39d2815d3ae7de56be5d93e4ad48d019a32ae77a",
+    "build-macos-py312.txt": "2b3be602aabd5c46513b9ec1b9c14918e9e6e9ce9ad038e32c83cc0b4b954a5b",
+    "build-windows-py310.txt": "27cb8ac90acb3ce551d5157051a10891ad3f06f25c1d8b56dbc26edd76997f75",
+    "build-windows-py311.txt": "229bf0d9a7d687ecb45e47817cb9dabbf80228ff8dce36f103e90877797efe8d",
+    "build-windows-py312.txt": "1f3555d539f907a07ca43e620f8f33b58529b3f12e349895b2dda3830d88b157",
+    "runtime-linux-py310.txt": "9eac421c6ee63d5dd4ed8e00e93ab33560d7e629a15c98c8b5c6355da8f8c601",
+    "runtime-linux-py311.txt": "e0ec61d96b906972efbf8ba6848a4f93fc6357d019d06c2434ea780a14ae48d8",
+    "runtime-linux-py312.txt": "3e53e896be60e10a27b1bc93c1cc84054f46ccfd3e1410c776c81f1adb07edb9",
+    "runtime-macos-py310.txt": "ebb49b7816b55040013e75558bb5451b4e04b0010cad8c45b98fe29fc171edbc",
+    "runtime-macos-py311.txt": "b7db4a21967c257e974c0527651c6cc759e62d9428a4e49af241db948b4e0a14",
+    "runtime-macos-py312.txt": "45ae546f8dcce91c565467dfc38b15580f9656834bded56283a9ad559eb58231",
+    "runtime-windows-py310.txt": "d99baf0dd195409a47dd19d70ebccd9d99edb04e9a570cb0a068c8779a5b5b4a",
+    "runtime-windows-py311.txt": "6b8e068516526798f3cca9c904f75da84f6e96d44302c3d239bd57516c79a5cf",
+    "runtime-windows-py312.txt": "fdb5354dc437d5fd2fabad7bb4d62a367fde15b0a42ae34e28513d886508042f"
+  },
+  "policy": {
+    "hash_algorithm": "sha256",
+    "index": "https://pypi.org/simple",
+    "runtime_build_no_deps": true,
+    "wheel_only": true
+  },
+  "schema_version": "1.0",
+  "source_hashes": {
+    "requirements-audit.txt": "6949e8f7c04b30d35680b64ea85d3651283107daf0b1b4b2f26096c3f883ddab",
+    "requirements-bootstrap.txt": "ccf0c6f90dc1328272aaeaff8a35b03f39a25f1889194a913f7648f387593b04",
+    "requirements-build-linux.txt": "dbef6703d1a65f926432762e6978b716973e3e3ff4caea902e6b9f7339964eac",
+    "requirements-build-macos.txt": "310976e1c3b08acfa89cf4698517154cdc8f8b685ef4b666a0a347f1951613ff",
+    "requirements-build.txt": "426d97839544a7e52c918c9fd7738de67a82db7e3c6a1b75fb6762566968b8f7",
+    "requirements.txt": "a6414a873f6964b99b5d329845e309ee7201cb4c2eaace1dabe6b47d8b23a47d"
+  }
+}

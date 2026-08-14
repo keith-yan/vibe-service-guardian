@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="500" viewBox="0 0 1200 500" role="img" aria-labelledby="title desc">
+  <title id="title">Vibe Service Guardian evidence workflow</title>
+  <desc id="desc">Local collection flows through attribution, assessment, explicit action, verification, and aggregate evidence while remaining inside the machine.</desc>
+  <rect width="1200" height="500" rx="28" fill="#edf2f8"/>
+  <text x="62" y="64" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="25" font-weight="700" fill="#152033">从“谁开的”到“能否安全关停”的本机证据链</text>
+  <text x="62" y="94" font-family="Segoe UI, sans-serif" font-size="15" fill="#667489">LOCAL-FIRST SERVICE ATTRIBUTION · EXPLICIT ACTION · VERIFIED OUTCOME</text>
+  <g font-family="Segoe UI, Microsoft YaHei, sans-serif">
+    <g transform="translate(55 140)">
+      <rect width="190" height="150" rx="18" fill="#fff" stroke="#dce3ec"/>
+      <circle cx="34" cy="34" r="13" fill="#2f73db"/>
+      <text x="58" y="41" font-size="18" font-weight="700" fill="#152033">采集</text>
+      <text x="24" y="78" font-size="14" fill="#405168">端口 · PID · 父进程</text>
+      <text x="24" y="104" font-size="14" fill="#405168">CPU/RAM/GPU · 运行时</text>
+      <text x="24" y="130" font-size="13" fill="#718095">Windows / macOS / Linux</text>
+    </g>
+    <path d="M255 215h42" stroke="#8ea1b8" stroke-width="3"/><path d="m292 208 10 7-10 7" fill="none" stroke="#8ea1b8" stroke-width="3"/>
+    <g transform="translate(307 140)">
+      <rect width="190" height="150" rx="18" fill="#fff" stroke="#dce3ec"/>
+      <circle cx="34" cy="34" r="13" fill="#7757cb"/>
+      <text x="58" y="41" font-size="18" font-weight="700" fill="#152033">归属</text>
+      <text x="24" y="78" font-size="14" fill="#405168">项目 · Agent · 会话</text>
+      <text x="24" y="104" font-size="14" fill="#405168">Docker / WSL 独立契约</text>
+      <text x="24" y="130" font-size="13" fill="#718095">证据不足保持未知</text>
+    </g>
+    <path d="M507 215h42" stroke="#8ea1b8" stroke-width="3"/><path d="m544 208 10 7-10 7" fill="none" stroke="#8ea1b8" stroke-width="3"/>
+    <g transform="translate(559 140)">
+      <rect width="190" height="150" rx="18" fill="#fff" stroke="#dce3ec"/>
+      <circle cx="34" cy="34" r="13" fill="#a96a0a"/>
+      <text x="58" y="41" font-size="18" font-weight="700" fill="#152033">评估</text>
+      <text x="24" y="78" font-size="14" fill="#405168">遗留风险 · 客户端影响</text>
+      <text x="24" y="104" font-size="14" fill="#405168">暴露面 · 资源 · 容量</text>
+      <text x="24" y="130" font-size="13" fill="#718095">每条判断可解释</text>
+    </g>
+    <path d="M759 215h42" stroke="#8ea1b8" stroke-width="3"/><path d="m796 208 10 7-10 7" fill="none" stroke="#8ea1b8" stroke-width="3"/>
+    <g transform="translate(811 140)">
+      <rect width="190" height="150" rx="18" fill="#fff" stroke="#dce3ec"/>
+      <circle cx="34" cy="34" r="13" fill="#c44747"/>
+      <text x="58" y="41" font-size="18" font-weight="700" fill="#152033">确认与验证</text>
+      <text x="24" y="78" font-size="14" fill="#405168">STOP / BENCHMARK</text>
+      <text x="24" y="104" font-size="14" fill="#405168">端口 · PID · 自动重启</text>
+      <text x="24" y="130" font-size="13" fill="#718095">逐次显式确认</text>
+    </g>
+    <path d="M1007 215h42" stroke="#8ea1b8" stroke-width="3"/><path d="m1044 208 10 7-10 7" fill="none" stroke="#8ea1b8" stroke-width="3"/>
+    <g transform="translate(1059 140)">
+      <rect width="90" height="150" rx="18" fill="#eaf8f2" stroke="#a8d8c8"/>
+      <circle cx="45" cy="34" r="13" fill="#148666"/>
+      <text x="45" y="72" text-anchor="middle" font-size="15" font-weight="700" fill="#152033">成效</text>
+      <text x="45" y="98" text-anchor="middle" font-size="12" fill="#405168">聚合</text>
+      <text x="45" y="118" text-anchor="middle" font-size="12" fill="#405168">脱敏</text>
+      <text x="45" y="138" text-anchor="middle" font-size="12" fill="#405168">可复核</text>
+    </g>
+  </g>
+  <rect x="55" y="340" width="1094" height="96" rx="18" fill="#152033"/>
+  <text x="82" y="379" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="17" font-weight="700" fill="#fff">隐私边界：控制台只监听 127.0.0.1；无自动遥测、无自动上传、无凭据读取</text>
+  <text x="82" y="410" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="14" fill="#cbd7e6">成效导出不含 PID、路径、IP、命令、会话 ID、日志或模型响应，并明确不是外部采用证据。</text>
+</svg>
