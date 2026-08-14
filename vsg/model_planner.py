@@ -184,12 +184,109 @@ class ModelPlanner:
             self.hardware(), self.catalog, model_id, quantization, workload
         )
 
+    @staticmethod
+    def _vram_total_gib(hardware: dict[str, Any]) -> float | None:
+        values = [
+            float(item["memory_total_gib"])
+            for item in hardware.get("gpus") or []
+            if item.get("memory_total_gib") is not None
+        ]
+        return round(sum(values), 2) if values else None
+
+    def measured_profiles(self, hardware: dict[str, Any] | None = None) -> dict[str, Any]:
+        current = hardware or self.hardware()
+        fingerprint = str(current.get("hardware_fingerprint") or "")
+        current_vram = self._vram_total_gib(current)
+        profiles = self.storage.calibration_profiles(100)
+        for profile in profiles:
+            status = str(profile.get("status") or "active")
+            stored_fingerprint = str(profile.get("hardware_fingerprint") or "")
+            fingerprint_match = bool(
+                fingerprint
+                and stored_fingerprint
+                and stored_fingerprint == fingerprint
+            )
+            stored_vram = profile.get("vram_total_gib")
+            vram_match = (
+                stored_vram is None
+                or current_vram is None
+                or abs(float(stored_vram) - float(current_vram)) <= 0.01
+            )
+            if status == "active" and (not fingerprint_match or not vram_match):
+                self.storage.set_calibration_profile_status(
+                    str(profile.get("profile_id") or ""), "possibly_invalid"
+                )
+                status = "possibly_invalid"
+                profile["status"] = status
+            profile["validity"] = (
+                "expired"
+                if status == "expired"
+                else "valid"
+                if status == "active" and fingerprint_match and vram_match
+                else "possibly_invalid"
+            )
+            profile["hardware_match"] = fingerprint_match
+            profile["vram_match"] = vram_match
+
+        groups: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+        for profile in profiles:
+            key = (
+                str(profile.get("model_name") or ""),
+                str(profile.get("quantization") or ""),
+                str(profile.get("runtime") or ""),
+            )
+            groups.setdefault(key, []).append(profile)
+        calibrated_models: list[dict[str, Any]] = []
+        for (model_name, quantization, runtime), items in groups.items():
+            valid_safe = [
+                item
+                for item in items
+                if item.get("validity") == "valid" and item.get("measured_safe")
+            ]
+            calibrated_models.append(
+                {
+                    "model_name": model_name,
+                    "quantization": quantization or None,
+                    "runtime": runtime,
+                    "last_measured_at": max(
+                        float(item.get("updated_at") or item.get("created_at") or 0)
+                        for item in items
+                    ),
+                    "measured_concurrency_limit": max(
+                        (int(item.get("concurrency") or 0) for item in valid_safe),
+                        default=0,
+                    ),
+                    "profile_count": len(items),
+                    "valid_profile_count": sum(
+                        item.get("validity") == "valid" for item in items
+                    ),
+                }
+            )
+        calibrated_models.sort(
+            key=lambda item: float(item.get("last_measured_at") or 0), reverse=True
+        )
+        return {
+            "items": profiles,
+            "calibrated_models": calibrated_models,
+            "summary": {
+                "total": len(profiles),
+                "valid": sum(item.get("validity") == "valid" for item in profiles),
+                "possibly_invalid": sum(
+                    item.get("validity") == "possibly_invalid" for item in profiles
+                ),
+                "expired": sum(item.get("validity") == "expired" for item in profiles),
+            },
+            "hardware_fingerprint": fingerprint,
+            "vram_total_gib": current_vram,
+        }
+
     def status(self) -> dict[str, Any]:
         hardware = self.hardware()
         runtimes = self.runtimes()
         benchmarks = self._calibration_benchmarks(
             str(hardware.get("hardware_fingerprint") or ""), 40
         )
+        profiles = self.measured_profiles(hardware)
         model_fields = {
             "id",
             "name",
@@ -219,6 +316,7 @@ class ModelPlanner:
                 {"id": key, **value} for key, value in QUANTIZATIONS.items()
             ],
             "benchmarks": benchmarks[:20],
+            "measured_profiles": profiles,
             "calibration_sources": {
                 "llama_bench": sum(item.get("calibration_source") == "llama_bench" for item in benchmarks),
                 "service_matrix": sum(item.get("calibration_source") == "service_matrix" for item in benchmarks),

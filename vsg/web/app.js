@@ -10,6 +10,8 @@ const state = {
   query: "",
   timer: null,
   stopTarget: null,
+  stopObservationJob: null,
+  dismissedObservationJobId: null,
   workloadMatrixTarget: null,
   workloadMatrixPlan: null,
   workloadMatrixJob: null,
@@ -28,11 +30,22 @@ const state = {
   confirmationAction: null,
   detailTarget: null,
   impactReport: null,
+  notifiedObservationJobs: new Set(),
 };
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const uiLocale = () => window.VSG_I18N?.locale === "en" ? "en-US" : "zh-CN";
+
+function localPreference(key, fallback = null) {
+  try { return localStorage.getItem(key) ?? fallback; }
+  catch { return fallback; }
+}
+
+function saveLocalPreference(key, value) {
+  try { localStorage.setItem(key, value); }
+  catch { /* Private browsing or policy may disable local preferences. */ }
+}
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -218,10 +231,15 @@ function renderRows() {
     const firstTcp = (service.endpoints || []).find((item) => item.protocol === "TCP");
     const canStop = service.source === "host" && !service.protected && service.metadata?.stoppable_candidate && service.process?.pid > 0;
     const canOpen = Boolean(firstTcp) && (service.source === "docker" || service.source === "wsl" || service.metadata?.openable_candidate);
+    const historyLabel = service.metadata?.historical_lifecycle_label === "safe_cleanup"
+      ? '<span class="source-badge history-label">用户历史标记 · 可安全清理</span>'
+      : service.metadata?.historical_lifecycle_label === "expected"
+        ? '<span class="source-badge history-label">用户历史标记 · 预期</span>'
+        : "";
     const row = document.createElement("tr");
     row.dataset.id = service.id;
     row.innerHTML = `
-      <td><div class="service-cell"><i class="status-orb ${risk.orb}"></i><div><span class="service-name" title="${escapeHtml(service.display_name)}">${escapeHtml(service.display_name)}</span><span class="subline">${escapeHtml(service.runtime)} · ${escapeHtml(service.process?.name || "unknown")}</span><span class="source-badge">${escapeHtml(sourceLabel(service.source))}</span></div></div></td>
+      <td><div class="service-cell"><i class="status-orb ${risk.orb}"></i><div><span class="service-name" title="${escapeHtml(service.display_name)}">${escapeHtml(service.display_name)}</span><span class="subline">${escapeHtml(service.runtime)} · ${escapeHtml(service.process?.name || "unknown")}</span><span class="source-badge">${escapeHtml(sourceLabel(service.source))}</span>${historyLabel}</div></div></td>
       <td><span class="mono">PID ${escapeHtml(service.process?.pid || "—")}</span><div class="port-list">${endpoints}${extraPorts}</div></td>
       <td><strong>${escapeHtml(project)}</strong><span class="subline" title="${escapeHtml(service.project?.path || "")}">${escapeHtml(agent)} ${confidence}</span></td>
       <td class="load-cell"><div class="load-values"><span>CPU <b>${cpu.toFixed(1)}%</b></span><span>MEM <b>${memory.toFixed(1)}%</b></span></div><progress class="load-progress" max="100" value="${Math.min(100, Math.max(cpu, memory))}"></progress></td>
@@ -389,6 +407,25 @@ function renderRuntimeHealth() {
   }
 }
 
+function renderProjectRuntimeViews() {
+  const views = state.snapshot?.service_relationships?.project_runtime_views || [];
+  const body = $("#project-runtime-body");
+  body.replaceChildren();
+  $("#project-runtime-empty").hidden = views.length !== 0;
+  for (const item of views) {
+    const project = item.project || {};
+    const service = item.service || {};
+    const model = item.models?.[0] || {};
+    const resources = item.resources || {};
+    const capacity = item.capacity || {};
+    const risk = riskPresentation(item.risk || {});
+    const currentLoad = `CPU ${resources.cpu_percent == null ? "?" : `${Number(resources.cpu_percent).toFixed(1)}%`} · RAM ${resources.rss_gib == null ? "?" : `${Number(resources.rss_gib).toFixed(2)} GiB`} · VRAM ${resources.gpu_memory_used_gib == null ? "?" : `${Number(resources.gpu_memory_used_gib).toFixed(2)} GiB`}`;
+    const row = document.createElement("tr");
+    row.innerHTML = `<td><strong>${escapeHtml(project.name || "未归类项目")}</strong><span class="subline">${escapeHtml(item.agent?.provider || "Agent 未归属")} · 归属置信度 ${escapeHtml(project.confidence || 0)}%</span></td><td><strong>${escapeHtml(service.display_name)}</strong><span class="subline">${escapeHtml(service.runtime)} · PID ${escapeHtml(service.pid || "—")} · ${escapeHtml(item.health)}</span></td><td><strong>${escapeHtml(model.name || "未报告")}</strong><span class="subline">${escapeHtml(model.quantization || "量化未知")}</span></td><td>${escapeHtml(currentLoad)}<span class="subline">运行请求 ${escapeHtml(item.performance?.requests_running ?? "未知")} · 排队 ${escapeHtml(item.performance?.requests_waiting ?? "未知")}</span></td><td><strong>${capacity.available_concurrency == null ? "证据不足" : `约 ${escapeHtml(capacity.available_concurrency)} 并发`}</strong><span class="subline">实测安全上限 ${escapeHtml(capacity.measured_safe_concurrency ?? "—")} · ${escapeHtml(capacity.evidence_label)}</span></td><td><span class="risk-badge ${escapeHtml(risk.cls)}">${escapeHtml(risk.label)}</span><span class="subline">监听 ${(service.endpoints || []).map((endpoint) => `:${endpoint.port}`).join(" ") || "无"}</span></td>`;
+    body.appendChild(row);
+  }
+}
+
 function renderSecurityAndNetwork() {
   const posture = state.snapshot?.posture || {};
   const firewall = posture.firewall || {};
@@ -433,6 +470,7 @@ function renderHealth() {
   renderHealthOverview();
   renderLiveResources();
   renderRuntimeHealth();
+  renderProjectRuntimeViews();
   renderSecurityAndNetwork();
   renderFindingsAndLimitations();
 }
@@ -507,7 +545,81 @@ function renderHardware() {
   $("#benchmark-availability").textContent = benchmark.available ? "llama-bench 可用" : "未检测到 llama-bench";
   $("#benchmark-button").disabled = !benchmark.available;
   renderBenchmarkHistory();
+  renderMeasuredProfiles();
   fillBenchmarkModels();
+}
+
+function renderMeasuredProfiles() {
+  const payload = state.plannerStatus || {};
+  const profiles = payload.measured_profiles || { items: [], summary: {} };
+  const margin = payload.current_resource_margin || {};
+  const ram = margin.ram || {};
+  const gpuMargins = (margin.gpus || []).map((item) => `${item.name || "GPU"} ${item.memory_free_gib == null ? "余量未知" : `${item.memory_free_gib} GiB 可用`}`).join(" · ");
+  $("#measured-profile-margin").textContent = `当前 RAM 可用 ${ram.available_gib ?? "未知"} GiB / ${ram.available_percent ?? "未知"}%${gpuMargins ? ` · ${gpuMargins}` : " · 未获得 VRAM 余量"} · 85% 护栏`;
+  const summary = profiles.summary || {};
+  $("#measured-profile-summary").innerHTML = `<span class="source-badge">有效 ${escapeHtml(summary.valid || 0)}</span><span class="source-badge">可能失效 ${escapeHtml(summary.possibly_invalid || 0)}</span><span class="source-badge">已过期 ${escapeHtml(summary.expired || 0)}</span>`;
+  const container = $("#measured-profile-list");
+  const targetSelect = $("#planner-calibration-service");
+  const previousTarget = targetSelect.value;
+  targetSelect.replaceChildren();
+  const probes = state.snapshot?.runtime_probes || [];
+  for (const probe of probes.filter((item) => item.health === "ready" && item.models?.length)) {
+    const service = state.snapshot?.services?.find((item) => item.id === probe.service_id);
+    if (!service || service.runtime === "ComfyUI" || probe.security?.auth_posture === "required") continue;
+    const option = document.createElement("option");
+    option.value = service.id;
+    option.textContent = `${service.project?.name || "未归类项目"} · ${service.display_name} · ${probe.models[0].name}`;
+    targetSelect.appendChild(option);
+  }
+  if ([...targetSelect.options].some((item) => item.value === previousTarget)) targetSelect.value = previousTarget;
+  $("#planner-calibrate-one").disabled = !targetSelect.options.length;
+  $("#planner-calibrate-two").disabled = !targetSelect.options.length;
+  container.replaceChildren();
+  if (!(profiles.items || []).length) {
+    container.innerHTML = '<span class="confidence-note">尚无本机 60 秒实测档案。请到 AI 运行体检，对已加载模型运行单并发或双并发校准。</span>';
+    return;
+  }
+  for (const profile of profiles.items.slice(0, 20)) {
+    const measurement = profile.measurement || {};
+    const theoretical = profile.theoretical_capacity?.max_concurrency?.effective;
+    const measured = profile.measured_safe ? profile.concurrency : 0;
+    const recommended = profile.recommended_safe_concurrency ?? measured;
+    const node = document.createElement("article");
+    node.className = `measured-profile ${escapeHtml(profile.validity || profile.status || "active")}`;
+    node.dataset.profileId = profile.profile_id;
+    node.innerHTML = `<div><strong>${escapeHtml(profile.model_name)} · ${escapeHtml(profile.quantization || "量化未知")}</strong><span>${escapeHtml(profile.runtime)} · ${escapeHtml(formatDate(profile.created_at))}</span><span>理论容量上限 ${theoretical == null ? "未映射" : `${escapeHtml(theoretical)} 并发`} · 实测可用上限 ${escapeHtml(measured)} 并发 · 推荐安全并发 ${escapeHtml(recommended)}</span><small>${escapeHtml(profile.evidence_label || "本机实测")} · 生成 ${measurement.generation_tps ?? "—"} tok/s · TTFT ${measurement.ttft_seconds ?? "—"}s · ${profile.validity === "valid" ? "当前硬件有效" : profile.validity === "expired" ? "用户标记过期" : "硬件变化，可能失效"}</small></div><div class="profile-actions"><button class="button button-small" type="button" data-profile-action="apply">应用到规划</button><button class="button button-small" type="button" data-profile-action="expire">${profile.status === "expired" ? "恢复有效" : "标记过期"}</button><button class="button button-small" type="button" data-profile-action="delete">删除</button></div>`;
+    container.appendChild(node);
+  }
+}
+
+async function handleMeasuredProfileAction(event) {
+  const button = event.target.closest("button[data-profile-action]");
+  if (!button) return;
+  const profileId = button.closest("[data-profile-id]")?.dataset.profileId;
+  const profile = state.plannerStatus?.measured_profiles?.items?.find((item) => item.profile_id === profileId);
+  if (!profile) return;
+  const action = button.dataset.profileAction;
+  if (action === "apply") {
+    $("#planner-concurrency").value = String(profile.recommended_safe_concurrency || profile.concurrency || 1);
+    $("#planner-context").value = String(Math.max(512, Number(profile.context_tokens || 1024)));
+    $("#planner-prompt").value = String(Math.max(16, Number(profile.context_tokens || 512)));
+    $("#planner-output").value = String(Math.max(1, Number(profile.output_tokens || 32)));
+    showToast("已应用该档案的实测工作负载；候选模型仍按容量条件重新计算");
+    await runPlannerEstimate();
+    return;
+  }
+  if (action === "expire") {
+    const status = profile.status === "expired" ? "active" : "expired";
+    await api("/api/calibration-profiles/status", { method: "POST", body: JSON.stringify({ profile_id: profileId, status }) });
+    await loadPlannerStatus();
+    showToast(status === "expired" ? "档案已标记过期，实测数据仍保留" : "档案已恢复；硬件不匹配时仍会自动标记可能失效");
+    return;
+  }
+  if (action === "delete") {
+    const phrase = `DELETE PROFILE ${profileId}`;
+    state.confirmationAction = { kind: "delete-profile", profileId, phrase };
+    openConfirmationDialog("删除本机实测档案", "只删除该条本机 SQLite 档案，不影响模型、服务或基准原始运行。", phrase);
+  }
 }
 
 function fillBenchmarkModels() {
@@ -1048,6 +1160,10 @@ async function submitConfirmation(event) {
       await api("/api/attribution/rules/delete", { method: "POST", body: JSON.stringify({ rule_id: action.ruleId, confirmation }) });
       await loadOperations();
       showToast(window.VSG_I18N?.locale === "en" ? "Attribution rule deleted" : "归属规则已删除");
+    } else if (action.kind === "delete-profile") {
+      await api("/api/calibration-profiles/delete", { method: "POST", body: JSON.stringify({ profile_id: action.profileId, confirmation }) });
+      await loadPlannerStatus();
+      showToast("本机实测档案已删除；模型和服务未受影响");
     } else if (action.kind === "unwatch") {
       await api("/api/log-monitor/unwatch", { method: "POST", body: JSON.stringify({ watch_id: action.watchId, confirmation }) });
       state.logEvents = null;
@@ -1077,8 +1193,19 @@ function openAttributionDialog(service) {
   $("#attribution-agent").value = service.agent?.provider || "";
   $("#attribution-project-name").value = service.project?.name || "";
   $("#attribution-project-path").value = service.project?.path || "";
-  $("#attribution-expected").checked = Boolean(service.expected);
+  const historicalLabel = service.metadata?.historical_lifecycle_label || "";
+  $("#attribution-expected").checked = Boolean(
+    service.expected && historicalLabel !== "expected"
+  );
   $("#attribution-protected").checked = Boolean(service.protected);
+  $("#attribution-lifecycle-label").value = historicalLabel;
+  $("#attribution-inherit").checked = Boolean(
+    historicalLabel && service.metadata?.historical_label_inherited
+  );
+  $("#attribution-inherit").disabled = !(
+    historicalLabel && service.metadata?.ownership_signature
+  );
+  $("#attribution-clear-label").hidden = !historicalLabel;
   $("#attribution-dialog").showModal();
 }
 
@@ -1094,11 +1221,28 @@ async function submitAttribution(event) {
     expected: $("#attribution-expected").checked,
     protected: $("#attribution-protected").checked,
   };
+  const lifecycleLabel = $("#attribution-lifecycle-label").value;
+  if (lifecycleLabel) override.lifecycle_label = lifecycleLabel;
   for (const key of Object.keys(override)) if (override[key] === "") delete override[key];
   try {
-    await postService("/api/service/attribute", service, { override });
+    await postService("/api/service/attribute", service, {
+      override,
+      inherit_similar: $("#attribution-inherit").checked,
+      name: lifecycleLabel ? `Historical lifecycle label · ${service.display_name}` : undefined,
+    });
     $("#attribution-dialog").close();
     showToast(window.VSG_I18N?.locale === "en" ? "Local attribution correction saved" : "本机归属纠正规则已保存");
+    setTimeout(loadStatus, 350);
+  } catch (error) { showToast(error.message, true); }
+}
+
+async function clearLifecycleLabel() {
+  const service = state.attributionTarget;
+  if (!service) return;
+  try {
+    await postService("/api/service/lifecycle-label/clear", service);
+    $("#attribution-dialog").close();
+    showToast("当前历史生命周期标签已撤销");
     setTimeout(loadStatus, 350);
   } catch (error) { showToast(error.message, true); }
 }
@@ -1282,13 +1426,13 @@ function renderWorkloadMatrixPlan(plan) {
   const steps = (plan.steps || []).map((step, index) => `
     <article class="matrix-step">
       <span class="matrix-step-index">${index + 1}</span>
-      <div><strong>${escapeHtml(step.label)}</strong><span>并发 ${escapeHtml(step.concurrency)} · 上下文 ${escapeHtml(step.context_tokens)} · 输出 ${escapeHtml(step.output_tokens)} · 请求 ${escapeHtml(step.request_count)} / ${escapeHtml(step.waves)} 波</span><small>${escapeHtml(matrixPredictionText(step.prediction))}</small></div>
+      <div><strong>${escapeHtml(step.label)}</strong><span>并发 ${escapeHtml(step.concurrency)} · 上下文 ${escapeHtml(step.context_tokens)} · 输出 ${escapeHtml(step.output_tokens)}${step.duration_seconds ? ` · 固定 ${escapeHtml(step.duration_seconds)} 秒` : ` · 请求 ${escapeHtml(step.request_count)} / ${escapeHtml(step.waves)} 波`}</span><small>${escapeHtml(matrixPredictionText(step.prediction))}</small></div>
     </article>`).join("");
   $("#workload-matrix-plan").innerHTML = `
     <div class="matrix-plan-head"><div><strong>${escapeHtml(plan.model_name)}</strong><span>${escapeHtml(plan.runtime)} · :${escapeHtml(plan.port)} · PID ${escapeHtml(plan.pid)}</span></div><span class="candidate-status ${guard.allowed ? "compatible" : "does_not_fit"}">${guard.allowed ? "可确认" : "已阻断"}</span></div>
     <div class="matrix-guard ${guard.allowed ? "allowed" : "blocked"}">${escapeHtml(guardText)}</div>
     <div class="matrix-steps">${steps}</div>
-    <p class="help-text">固定 ${escapeHtml(plan.steps?.length || 0)} 步、共 ${escapeHtml(plan.total_requests)} 个合成请求；不会自动扩档，不会故意试探 OOM。预览 5 分钟内有效。</p>`;
+    <p class="help-text">${plan.mode === "calibration" ? "60 秒校准窗口，最多 120 个请求；本机很快时可能提前用完请求预算，窗口到期后不再发起新请求" : `固定 ${escapeHtml(plan.steps?.length || 0)} 步、共 ${escapeHtml(plan.total_requests)} 个合成请求`}；不会自动扩档，不会故意试探 OOM。预览 5 分钟内有效。</p>`;
   $("#workload-matrix-confirmation-field").hidden = !guard.allowed;
   $("#workload-matrix-prompt").textContent = `输入确认短语 ${plan.confirmation}`;
   $("#workload-matrix-confirmation").placeholder = plan.confirmation;
@@ -1304,15 +1448,20 @@ async function previewWorkloadMatrix() {
   if (!target) return;
   const button = $("#workload-matrix-preview");
   button.disabled = true;
-  button.textContent = "正在生成固定计划…";
+  button.textContent = "正在生成可预览计划…";
   try {
     const modelId = $("#workload-matrix-model").value;
+    const mode = $("#workload-matrix-mode").value;
     const payload = await api("/api/benchmark-matrix/preview", {
       method: "POST",
       body: JSON.stringify({
         service_id: target.service.id,
         catalog_model_id: modelId || null,
         quantization: modelId ? $("#workload-matrix-quant").value : null,
+        mode,
+        model_name: $("#workload-matrix-loaded-model").value,
+        concurrency: mode === "calibration" ? Number($("#workload-calibration-concurrency").value) : null,
+        duration_seconds: mode === "calibration" ? 60 : null,
       }),
     });
     renderWorkloadMatrixPlan(payload.plan);
@@ -1343,13 +1492,16 @@ function renderWorkloadMatrixStatus(job) {
     cancelled: "已中止剩余负载", guard_stopped: "资源护栏停止", identity_changed: "服务身份已变化", failed: "运行失败",
   };
   const current = job.current_step || {};
+  const elapsed = Math.max(0, Date.now() / 1000 - Number(job.started_at || Date.now() / 1000));
+  const durationProgress = current.duration_seconds ? Math.min(Number(current.duration_seconds), elapsed) : null;
+  const latestResource = (current.resource_samples || []).at(-1) || {};
   const progress = current.id
-    ? `<div class="matrix-current"><strong>当前：${escapeHtml(current.label)} · ${escapeHtml(current.completed_requests || 0)} / ${escapeHtml(current.request_count || 0)} 请求</strong><progress max="${escapeHtml(current.request_count || 1)}" value="${escapeHtml(current.completed_requests || 0)}"></progress></div>`
+    ? `<div class="matrix-current"><strong>当前：${escapeHtml(current.label)} · ${current.duration_seconds ? `${escapeHtml(Math.floor(durationProgress))} / ${escapeHtml(current.duration_seconds)} 秒` : `${escapeHtml(current.completed_requests || 0)} / ${escapeHtml(current.request_count || 0)} 请求`}</strong><progress max="${escapeHtml(current.duration_seconds || current.request_count || 1)}" value="${escapeHtml(current.duration_seconds ? durationProgress : current.completed_requests || 0)}"></progress><small>实时 RAM ${latestResource.memory_used_percent ?? "?"}% · VRAM ${latestResource.gpu_memory_used_percent ?? "?"}% · GPU ${latestResource.gpu_temperature_c ?? "?"}°C</small></div>`
     : "";
   const results = (job.results || []).map((item) => {
     const error = item.prediction_error || {};
     const peaks = item.resource_peaks || {};
-    return `<article class="matrix-result"><strong>${escapeHtml(item.matrix_step_id || "step")} · 成功 ${escapeHtml(item.successful_requests)} / ${escapeHtml(item.request_count || item.successful_requests + item.failed_requests)}</strong><span>生成 ${item.generation_tps == null ? "未获得" : `${escapeHtml(item.generation_tps)} tok/s/用户`} · 聚合 ${item.aggregate_generation_tps == null ? "未获得" : `${escapeHtml(item.aggregate_generation_tps)} tok/s`} · TTFT P50 ${item.ttft_seconds == null ? "—" : `${escapeHtml(item.ttft_seconds)}s`} / P95 ${item.ttft_p95_seconds == null ? "样本不足" : `${escapeHtml(item.ttft_p95_seconds)}s`}</span><span>生成预测误差 ${escapeHtml(predictionErrorText(error.per_user_generation_tps))} · TTFT 预测误差 ${escapeHtml(predictionErrorText(error.ttft_seconds))}</span><small>峰值 RAM ${peaks.peak_ram_used_percent ?? "?"}% · VRAM ${peaks.peak_vram_used_percent ?? "?"}% · GPU ${peaks.peak_gpu_temperature_c ?? "?"}°C · 最低磁盘 ${peaks.minimum_disk_free_gib ?? "?"} GiB</small></article>`;
+    return `<article class="matrix-result"><strong>${escapeHtml(item.matrix_step_id || "step")} · 成功 ${escapeHtml(item.successful_requests)} / ${escapeHtml(item.request_count || item.successful_requests + item.failed_requests)}</strong><span>生成 ${item.generation_tps == null ? "未获得" : `${escapeHtml(item.generation_tps)} tok/s/用户`} · 聚合 ${item.aggregate_generation_tps == null ? "未获得" : `${escapeHtml(item.aggregate_generation_tps)} tok/s`} · TTFT P50 ${item.ttft_seconds == null ? "—" : `${escapeHtml(item.ttft_seconds)}s`} / P95 ${item.ttft_p95_seconds == null ? "样本不足" : `${escapeHtml(item.ttft_p95_seconds)}s`}</span><span>生成预测误差 ${escapeHtml(predictionErrorText(error.per_user_generation_tps))} · TTFT 预测误差 ${escapeHtml(predictionErrorText(error.ttft_seconds))}</span><small>峰值 RAM ${peaks.peak_ram_used_percent ?? "?"}% · VRAM ${peaks.peak_vram_used_percent ?? "?"}% · GPU ${peaks.peak_gpu_temperature_c ?? "?"}°C · 最低磁盘 ${peaks.minimum_disk_free_gib ?? "?"} GiB${item.calibration_profile ? ` · 已生成本机实测档案 ${escapeHtml(item.calibration_profile.profile_id)}` : ""}</small></article>`;
   }).join("");
   const container = $("#workload-matrix-status");
   container.hidden = false;
@@ -1362,6 +1514,9 @@ function renderWorkloadMatrixStatus(job) {
   $("#workload-matrix-preview").disabled = active;
   $("#workload-matrix-model").disabled = active;
   $("#workload-matrix-quant").disabled = active;
+  $("#workload-matrix-mode").disabled = active;
+  $("#workload-matrix-loaded-model").disabled = active;
+  $("#workload-calibration-concurrency").disabled = active;
 }
 
 function scheduleWorkloadMatrixPoll(jobId) {
@@ -1382,6 +1537,9 @@ async function pollWorkloadMatrix(jobId) {
       $("#workload-matrix-preview").disabled = false;
       $("#workload-matrix-model").disabled = false;
       $("#workload-matrix-quant").disabled = false;
+      $("#workload-matrix-mode").disabled = false;
+      $("#workload-matrix-loaded-model").disabled = false;
+      $("#workload-calibration-concurrency").disabled = false;
       await loadPlannerStatus();
       if (state.estimate) await runPlannerEstimate();
       showToast(job.status === "completed" ? "工作负载矩阵完成，容量预测已获得校准样本" : `工作负载矩阵结束：${job.status}`, job.status !== "completed" && job.status !== "cancelled");
@@ -1406,7 +1564,7 @@ async function submitWorkloadMatrix(event) {
     });
     renderWorkloadMatrixStatus(payload.job);
     scheduleWorkloadMatrixPoll(payload.job.job_id);
-    showToast("固定工作负载矩阵已启动；可随时中止剩余负载");
+    showToast(plan.mode === "calibration" ? "60 秒本机校准已启动；可随时中止" : "固定工作负载矩阵已启动；可随时中止剩余负载");
   } catch (error) {
     button.disabled = false;
     showToast(error.message, true);
@@ -1434,13 +1592,24 @@ async function cancelWorkloadMatrix() {
   }
 }
 
-async function openWorkloadMatrix(serviceId) {
+async function openWorkloadMatrix(serviceId, calibrationConcurrency = 1) {
   const target = healthTarget(serviceId);
   if (!target) return showToast("服务状态已变化，请刷新后重试", true);
   state.workloadMatrixTarget = target;
   state.workloadMatrixPlan = null;
   state.workloadMatrixJob = null;
   $("#workload-matrix-title").textContent = `${target.service.display_name} · :${target.probe.port} 分级负载矩阵`;
+  $("#workload-matrix-mode").value = "calibration";
+  $("#workload-calibration-concurrency").value = String(calibrationConcurrency === 2 ? 2 : 1);
+  $("#workload-calibration-concurrency-field").hidden = false;
+  const loadedSelect = $("#workload-matrix-loaded-model");
+  loadedSelect.replaceChildren();
+  for (const model of target.probe.models || []) {
+    const option = document.createElement("option");
+    option.value = model.name;
+    option.textContent = model.name;
+    loadedSelect.appendChild(option);
+  }
   $("#workload-matrix-plan").hidden = false;
   $("#workload-matrix-plan").innerHTML = '<span class="confidence-note">正在读取目录与当前任务…</span>';
   $("#workload-matrix-status").hidden = true;
@@ -1463,6 +1632,12 @@ async function openWorkloadMatrix(serviceId) {
     $("#workload-matrix-plan").innerHTML = `<div class="matrix-guard blocked">${escapeHtml(error.message)}</div>`;
     showToast(error.message, true);
   }
+}
+
+async function openPlannerCalibration(concurrency) {
+  const serviceId = $("#planner-calibration-service").value;
+  if (!serviceId) return showToast("当前没有可校准的已加载本地模型", true);
+  await openWorkloadMatrix(serviceId, concurrency);
 }
 
 function openDiagnostic(serviceId) {
@@ -1677,10 +1852,14 @@ function renderStopAssessment(service, assessment) {
   const relaunch = assessment.relaunch || {};
   const recovery = assessment.recovery || {};
   $("#stop-summary").textContent = `${service.display_name} · PID ${service.process.pid} · ${decisionLabels[assessment.decision] || "证据不足"}。 关停会同时影响 ${impact.endpoint_count || 0} 个端点和 ${impact.client_count || 0} 个当前本机客户端。`;
+  const operations = (assessment.recommended_operations || []).map((item, index) => `
+    <div class="recommended-operation"><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(item.instruction)}</span>${item.copy_text ? `<button class="button button-small" type="button" data-copy-operation="${index}">复制建议命令</button><code>${escapeHtml(item.copy_text)}</code>` : ""}</div>`).join("");
   $("#stop-assessment").innerHTML = `
     <section class="assessment-card"><span class="assessment-decision ${escapeHtml(assessment.decision || "blocked")}">${escapeHtml(decisionLabels[assessment.decision] || "证据不足")}</span><strong>阻断与警告</strong>${assessmentList([...(assessment.blockers || []), ...(assessment.warnings || [])], "未识别额外阻断；仍需人工确认当前请求是否可中断。")}</section>
     <section class="assessment-card"><strong>当前影响</strong><p>客户端 ${escapeHtml(impact.client_count || 0)} · 端点 ${escapeHtml(impact.endpoint_count || 0)} · 项目 ${escapeHtml(impact.project || "未知")} · Agent ${escapeHtml(impact.agent || "未知")}</p>${assessmentList((impact.clients || []).map((item) => `PID ${item.source_pid} ${item.source_name} → :${item.port}`), "未检测到本机 TCP 客户端依赖。")}</section>
-    <section class="assessment-card"><strong>重启与恢复</strong><p>重新拉起风险 ${escapeHtml(relaunch.risk || "unknown")} · 策略 ${escapeHtml(relaunch.restart_policy || "未检测到")} · 管理器 ${escapeHtml(relaunch.lifecycle_manager || "未识别")}</p>${assessmentList(recovery.steps || [], "回到项目目录复核原运行方式后手工恢复。")}</section>`;
+    <section class="assessment-card"><strong>重启与恢复</strong><p>重新拉起风险 ${escapeHtml(relaunch.risk || "unknown")} · 策略 ${escapeHtml(relaunch.restart_policy || "未检测到")} · 管理器 ${escapeHtml(relaunch.lifecycle_manager || "未识别")}</p>${assessmentList(recovery.steps || [], "回到项目目录复核原运行方式后手工恢复。")}</section>
+    <section class="assessment-card"><strong>推荐操作（只展示，不执行）</strong>${operations || "<p>暂无可验证的生命周期管理器命令，请根据父进程证据回到原启动入口。</p>"}</section>`;
+  $("#stop-assessment").dataset.operations = JSON.stringify(assessment.recommended_operations || []);
   const canStop = Boolean(assessment.can_request_stop);
   $("#stop-confirmation-field").hidden = !canStop;
   $("#stop-submit").hidden = !canStop;
@@ -1715,6 +1894,8 @@ async function openStopDialog(service) {
   $("#stop-prompt").textContent = `请输入 STOP ${pid}`;
   $("#stop-confirmation").value = "";
   $("#stop-confirmation").placeholder = `STOP ${pid}`;
+  const remembered = localPreference("vsg.stopObservationMinutes", "15");
+  $("#stop-observation-minutes").value = ["5", "15", "30"].includes(remembered) ? remembered : "15";
   $("#stop-dialog").showModal();
   try {
     const payload = await postService("/api/service/stop-assessment", service);
@@ -1735,19 +1916,136 @@ async function submitStop(event) {
   button.disabled = true;
   button.textContent = "停止并验证中…";
   try {
-    const payload = await postService("/api/process/stop", service, { confirmation: $("#stop-confirmation").value });
+    const observationMinutes = Number($("#stop-observation-minutes").value || 15);
+    saveLocalPreference("vsg.stopObservationMinutes", String(observationMinutes));
+    const payload = await postService("/api/process/stop", service, {
+      confirmation: $("#stop-confirmation").value,
+      observation_minutes: observationMinutes,
+    });
     const verification = payload.result?.verification || {};
+    state.stopObservationJob = payload.result?.observation || null;
     renderStopVerification(verification);
     $("#stop-confirmation-field").hidden = true;
     button.hidden = true;
-    showToast(verification.outcome === "stopped" ? `PID ${service.process.pid} 已停止并完成端口验证` : `停止后验证结果：${verification.outcome || "unknown"}`, verification.outcome !== "stopped");
+    renderStopObservationBar();
+    const observationFailed = state.stopObservationJob?.status === "failed_to_start";
+    showToast(
+      observationFailed
+        ? state.stopObservationJob.limitations?.[0] || "停止已完成，但持续观察未能启动；请立即人工复核端口"
+        : verification.outcome === "stopped"
+          ? `PID ${service.process.pid} 已停止；已开始 ${observationMinutes} 分钟持续观察`
+          : `停止后验证结果：${verification.outcome || "unknown"}`,
+      observationFailed || verification.outcome !== "stopped",
+    );
     setTimeout(loadStatus, 400);
   } catch (error) {
     showToast(error.message, true);
     button.disabled = false;
   } finally {
-    button.textContent = "确认停止";
+    button.textContent = "停止并观察";
   }
+}
+
+function formatCountdown(value) {
+  const seconds = Math.max(0, Math.ceil(Number(value || 0)));
+  const minutes = Math.floor(seconds / 60);
+  return `${String(minutes).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+function maybeNotifyRelaunch(job) {
+  if (job?.status !== "relaunched" || state.notifiedObservationJobs.has(job.job_id)) return;
+  state.notifiedObservationJobs.add(job.job_id);
+  if ("Notification" in window && Notification.permission === "granted") {
+    new Notification("VSG：服务已复活，需人工介入", {
+      body: `${job.display_name || "service"} · 原 PID ${job.original_pid || "—"}`,
+    });
+  }
+}
+
+function renderStopObservationBar() {
+  const job = state.stopObservationJob;
+  const bar = $("#stop-observation-bar");
+  if (!job || state.dismissedObservationJobId === job.job_id) {
+    bar.hidden = true;
+    return;
+  }
+  const active = ["observing", "cancel_requested"].includes(job.status);
+  const labels = {
+    observing: "正在持续观察停止结果",
+    cancel_requested: "正在中止持续观察",
+    completed: "停止验证报告：成功消失",
+    relaunched: job.conclusion === "higher_level_relaunch" ? "停止验证报告：疑似被更高层进程拉起" : "停止验证报告：服务已复活",
+    evidence_insufficient: "停止验证报告：证据不足",
+    cancelled: "持续观察已由用户中止",
+    interrupted: "持续观察因 VSG 退出而中断",
+    failed: "持续观察失败：证据不足",
+    failed_to_start: "持续观察未能启动：请人工复核",
+  };
+  bar.classList.toggle("attention", job.status === "relaunched");
+  $("#stop-observation-title").textContent = labels[job.status] || "停止后持续观察";
+  const parentChanged = job.report?.parent_process_changed ? " · 父进程已变化" : "";
+  const portState = job.port_state === "reopened"
+    ? "端口已重新监听"
+    : job.port_state === "closed"
+      ? "端口仍关闭"
+      : "端口状态待确认";
+  $("#stop-observation-summary").textContent = job.status === "failed_to_start"
+    ? job.limitations?.[0] || "停止动作已经发生；当前没有持续观察证据"
+    : active
+    ? `PID ${job.original_pid}（${job.project_name || "未归类项目"}）· 剩余 ${formatCountdown(job.remaining_seconds)} · ${portState}`
+    : `PID ${job.original_pid} · ${portState}${parentChanged} · 检查 ${job.report?.checks || job.checks || 0} 次`;
+  const button = $("#stop-observation-cancel");
+  button.textContent = active ? "中止观察" : "关闭报告";
+  button.disabled = job.status === "cancel_requested";
+  bar.hidden = false;
+  maybeNotifyRelaunch(job);
+}
+
+async function loadStopObservations() {
+  try {
+    const payload = await api("/api/stop-observations");
+    const active = payload.active?.[0];
+    const latest = payload.items?.[0];
+    const pendingFailure = state.stopObservationJob?.status === "failed_to_start"
+      && state.dismissedObservationJobId !== state.stopObservationJob.job_id
+      ? state.stopObservationJob
+      : null;
+    state.stopObservationJob = active || pendingFailure || latest || state.stopObservationJob;
+    renderStopObservationBar();
+  } catch {
+    // The service dashboard remains usable if this optional status read fails.
+  }
+}
+
+async function handleStopObservationButton() {
+  const job = state.stopObservationJob;
+  if (!job) return;
+  if (!["observing", "cancel_requested"].includes(job.status)) {
+    state.dismissedObservationJobId = job.job_id;
+    renderStopObservationBar();
+    return;
+  }
+  try {
+    const payload = await api("/api/stop-observations/cancel", {
+      method: "POST",
+      body: JSON.stringify({ job_id: job.job_id }),
+    });
+    state.stopObservationJob = payload.job;
+    renderStopObservationBar();
+    showToast("已请求中止持续观察；不会执行任何进程操作");
+  } catch (error) { showToast(error.message, true); }
+}
+
+async function copyRecommendedOperation(event) {
+  const button = event.target.closest("button[data-copy-operation]");
+  if (!button) return;
+  const operations = JSON.parse($("#stop-assessment").dataset.operations || "[]");
+  const item = operations[Number(button.dataset.copyOperation)];
+  if (!item?.copy_text) return;
+  try {
+    await navigator.clipboard.writeText(item.copy_text);
+    showToast("建议命令已复制；VSG 未执行该命令");
+  } catch (error) { showToast(`复制失败：${error.message}`, true); }
 }
 
 function fillSettings() {
@@ -1762,6 +2060,7 @@ function fillSettings() {
   $("#setting-docker").checked = config.include_docker;
   $("#setting-wsl").checked = config.include_wsl;
   $("#setting-runtime-probes").checked = config.enable_runtime_probes;
+  $("#setting-system-notifications").checked = config.enable_system_notifications;
   $("#setting-low-disk").value = config.low_disk_free_gib;
   $("#setting-log-retention").value = config.log_retention_days;
   $("#setting-electricity").value = config.electricity_price_per_kwh;
@@ -1799,6 +2098,7 @@ async function saveSettings(event) {
     include_docker: $("#setting-docker").checked,
     include_wsl: $("#setting-wsl").checked,
     enable_runtime_probes: $("#setting-runtime-probes").checked,
+    enable_system_notifications: $("#setting-system-notifications").checked,
     low_disk_free_gib: Number($("#setting-low-disk").value),
     log_retention_days: Number($("#setting-log-retention").value),
     electricity_price_per_kwh: Number($("#setting-electricity").value),
@@ -1904,6 +2204,7 @@ async function loadStatus() {
     state.platform = payload.platform || payload.snapshot?.platform || state.platform;
     applyPlatformUi();
     render();
+    await loadStopObservations();
   } catch (error) {
     showToast(`状态读取失败：${error.message}`, true);
   }
@@ -1977,10 +2278,20 @@ function bindEvents() {
   });
   $("#stop-form").addEventListener("submit", submitStop);
   $("#stop-cancel").addEventListener("click", () => $("#stop-dialog").close());
+  $("#stop-assessment").addEventListener("click", copyRecommendedOperation);
+  $("#stop-observation-cancel").addEventListener("click", handleStopObservationButton);
   $("#settings-form").addEventListener("submit", saveSettings);
   $("#settings-cancel").addEventListener("click", () => $("#settings-dialog").close());
   $("#attribution-form").addEventListener("submit", submitAttribution);
   $("#attribution-cancel").addEventListener("click", () => $("#attribution-dialog").close());
+  $("#attribution-clear-label").addEventListener("click", clearLifecycleLabel);
+  $("#attribution-lifecycle-label").addEventListener("change", (event) => {
+    const canInherit = Boolean(
+      event.target.value && state.attributionTarget?.metadata?.ownership_signature
+    );
+    $("#attribution-inherit").disabled = !canInherit;
+    $("#attribution-inherit").checked = canInherit;
+  });
   $("#confirmation-form").addEventListener("submit", submitConfirmation);
   $("#confirmation-cancel").addEventListener("click", () => { state.confirmationAction = null; $("#confirmation-dialog").close(); });
   $$(".workspace-tab").forEach((button) => button.addEventListener("click", () => activateView(button.dataset.view)));
@@ -1996,6 +2307,13 @@ function bindEvents() {
   $("#service-benchmark-cancel").addEventListener("click", () => $("#service-benchmark-dialog").close());
   $("#workload-matrix-form").addEventListener("submit", submitWorkloadMatrix);
   $("#workload-matrix-preview").addEventListener("click", previewWorkloadMatrix);
+  $("#workload-matrix-mode").addEventListener("change", (event) => {
+    const calibration = event.target.value === "calibration";
+    $("#workload-calibration-concurrency-field").hidden = !calibration;
+    $("#workload-matrix-title").textContent = calibration
+      ? `${state.workloadMatrixTarget?.service?.display_name || "模型服务"} · 60 秒本机校准`
+      : `${state.workloadMatrixTarget?.service?.display_name || "模型服务"} · 分级负载矩阵`;
+  });
   $("#workload-matrix-cancel").addEventListener("click", cancelWorkloadMatrix);
   $("#workload-matrix-close").addEventListener("click", () => $("#workload-matrix-dialog").close());
   $("#diagnostic-form").addEventListener("submit", submitDiagnostic);
@@ -2024,6 +2342,9 @@ function bindEvents() {
     try { await loadAdvisor(true); } catch (error) { showToast(error.message, true); }
   });
   $("#history-clear-form").addEventListener("submit", submitHistoryClear);
+  $("#measured-profile-list").addEventListener("click", handleMeasuredProfileAction);
+  $("#planner-calibrate-one").addEventListener("click", () => openPlannerCalibration(1));
+  $("#planner-calibrate-two").addEventListener("click", () => openPlannerCalibration(2));
   document.addEventListener("keydown", (event) => {
     if (state.activeView === "services" && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
       event.preventDefault();

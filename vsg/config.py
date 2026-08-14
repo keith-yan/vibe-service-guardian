@@ -48,6 +48,7 @@ class AppConfig:
     low_disk_free_gib: int = 50
     log_retention_days: int = 7
     enable_runtime_probes: bool = True
+    enable_system_notifications: bool = False
     trusted_nodes: list[str] = field(default_factory=list)
 
     def public_dict(self) -> dict[str, Any]:
@@ -107,6 +108,7 @@ def validate_config(data: dict[str, Any], base: AppConfig | None = None) -> AppC
         "include_docker",
         "include_wsl",
         "enable_runtime_probes",
+        "enable_system_notifications",
     ):
         if not isinstance(merged[key], bool):
             raise ValueError(f"{key} 必须是布尔值")

@@ -17,6 +17,83 @@
   background: var(--bg);
 }
 
+.observation-bar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  margin: 0 0 18px;
+  padding: 14px 18px;
+  border: 1px solid #d6a32f;
+  border-radius: 14px;
+  background: #fff8df;
+  box-shadow: 0 8px 24px rgb(37 47 62 / 10%);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.observation-bar[hidden] { display: none; }
+
+.observation-bar > div { display: grid; gap: 3px; }
+
+.observation-bar.attention {
+  border-color: #c83f49;
+  background: #fff0f1;
+}
+
+.history-label { margin-left: 6px; background: #eaf7ef; color: #176a46; }
+
+.recommended-operation {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto;
+  gap: 6px 12px;
+  padding: 10px 0;
+  border-top: 1px solid var(--line, #dce2e9);
+}
+
+.recommended-operation span,
+.recommended-operation code { grid-column: 1 / -1; }
+
+.recommended-operation code {
+  overflow-wrap: anywhere;
+  padding: 8px;
+  border-radius: 8px;
+  background: #f3f6f9;
+}
+
+.measured-profile {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--line, #dce2e9);
+  border-radius: 12px;
+  background: #fff;
+}
+
+.measured-profile > div:first-child { display: grid; gap: 3px; }
+.measured-profile.possibly_invalid { border-color: #d6a32f; background: #fffaf0; }
+.measured-profile.expired { opacity: .68; }
+.profile-actions { display: flex; flex-wrap: wrap; gap: 7px; justify-content: flex-end; }
+
+.profile-calibration-controls {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) auto auto;
+  align-items: end;
+  gap: 10px;
+}
+
+@media (max-width: 760px) {
+  .observation-bar,
+  .measured-profile { align-items: stretch; flex-direction: column; }
+  .profile-actions { justify-content: flex-start; }
+  .profile-calibration-controls { grid-template-columns: 1fr; }
+}
+
 [hidden] { display: none !important; }
 
 * { box-sizing: border-box; }

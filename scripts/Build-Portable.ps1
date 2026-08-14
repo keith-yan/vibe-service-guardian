@@ -83,6 +83,8 @@ Copy-Item -LiteralPath (Join-Path $ProjectRoot 'docs\V0.8.2-HARDENING.md') -Dest
 Copy-Item -LiteralPath (Join-Path $ProjectRoot 'docs\PRODUCTION-READINESS-0.8.2.md') -Destination $PortableDocs
 Copy-Item -LiteralPath (Join-Path $ProjectRoot 'docs\V0.8.3-CONVERGENCE.md') -Destination $PortableDocs
 Copy-Item -LiteralPath (Join-Path $ProjectRoot 'docs\PRODUCTION-READINESS-0.8.3.md') -Destination $PortableDocs
+Copy-Item -LiteralPath (Join-Path $ProjectRoot 'docs\V0.8.4-P0-CLOSURE.md') -Destination $PortableDocs
+Copy-Item -LiteralPath (Join-Path $ProjectRoot 'docs\PRODUCTION-READINESS-0.8.4.md') -Destination $PortableDocs
 Copy-Item -LiteralPath (Join-Path $ProjectRoot 'docs\VALIDATION.md') -Destination $PortableDocs
 Copy-Item -LiteralPath (Join-Path $ProjectRoot 'docs\EVIDENCE-REGISTER.md') -Destination $PortableDocs
 $PortableCaseStudies = Join-Path $PortableDocs 'case-studies'

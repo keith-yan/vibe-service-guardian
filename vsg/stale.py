@@ -75,6 +75,11 @@ def assess_service(
 
     score = 0
     reasons: list[str] = []
+    if service.metadata.get("historical_lifecycle_label") == "safe_cleanup":
+        # A user-confirmed historical label is strong review evidence, but it
+        # never makes a stop action automatic or bypasses process protection.
+        score += config.review_score
+        reasons.append("同路径和工作目录曾由用户标记为可安全清理；仍需重新确认后才能停止")
     started = service.process.create_time
     age_hours = (current - started) / 3600 if started else 0
     if age_hours >= 72:

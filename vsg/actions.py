@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import urllib.parse
 import webbrowser
@@ -13,6 +14,7 @@ from typing import Any, Callable
 import psutil
 
 from .network import collect_connections
+from .scanner import redacted_command_hash
 
 
 class ActionError(RuntimeError):
@@ -46,6 +48,68 @@ def _listener_snapshot() -> list[dict[str, Any]]:
     return listeners
 
 
+def _matching_command_processes(expected_hash: str) -> list[dict[str, Any]]:
+    """Find local processes matching a redacted command hash.
+
+    This function reads only process metadata already used by the scanner.  It
+    returns PID/parent/start evidence and never returns command arguments.
+    """
+
+    if not expected_hash:
+        return []
+    matches: list[dict[str, Any]] = []
+    try:
+        iterator = psutil.process_iter(
+            attrs=["pid", "ppid", "name", "cmdline", "create_time"], ad_value=None
+        )
+        for process in iterator:
+            try:
+                info = process.info
+                arguments = info.get("cmdline") or []
+                if redacted_command_hash(arguments) != expected_hash:
+                    continue
+                matches.append(
+                    {
+                        "pid": int(info.get("pid") or 0),
+                        "ppid": int(info["ppid"]) if info.get("ppid") is not None else None,
+                        "name": str(info.get("name") or "unknown")[:160],
+                        "create_time": float(info["create_time"])
+                        if info.get("create_time") is not None
+                        else None,
+                    }
+                )
+            except (psutil.Error, OSError, TypeError, ValueError):
+                continue
+    except (psutil.Error, OSError):
+        return []
+    return matches
+
+
+def _parent_process_evidence(pid: int, original_parent_pid: int | None) -> dict[str, Any]:
+    try:
+        process = psutil.Process(pid)
+        parent_pid = int(process.ppid())
+        parent_name = None
+        if parent_pid > 0:
+            try:
+                parent_name = psutil.Process(parent_pid).name()[:160]
+            except (psutil.Error, OSError):
+                parent_name = None
+    except (psutil.Error, OSError):
+        parent_pid = None
+        parent_name = None
+    return {
+        "replacement_parent_pid": parent_pid,
+        "replacement_parent_name": parent_name,
+        "original_parent_pid": original_parent_pid,
+        "parent_changed": bool(
+            parent_pid is not None
+            and original_parent_pid is not None
+            and parent_pid != original_parent_pid
+        ),
+    }
+
+
 def verify_post_stop(
     service: dict[str, Any],
     affected_pids: list[int],
@@ -54,8 +118,12 @@ def verify_post_stop(
     poll_interval: float = 0.5,
     process_probe: Callable[[int], float | None] = _process_create_time,
     listener_provider: Callable[[], list[dict[str, Any]]] = _listener_snapshot,
+    command_match_provider: Callable[[str], list[dict[str, Any]]] = _matching_command_processes,
     monotonic: Callable[[], float] = time.monotonic,
     sleeper: Callable[[float], None] = time.sleep,
+    cancel_event: threading.Event | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    stop_on_restart: bool = False,
 ) -> dict[str, Any]:
     """Observe a bounded post-stop window without taking a second action.
 
@@ -65,7 +133,9 @@ def verify_post_stop(
 
     process = service.get("process") or {}
     original_pid = int(process.get("pid") or 0)
+    original_parent_pid = int(process.get("ppid") or 0) or None
     expected_create_time = process.get("create_time")
+    expected_command_hash = str((service.get("metadata") or {}).get("command_hash") or "")
     endpoints = [
         {
             "protocol": str(item.get("protocol") or "").upper(),
@@ -83,6 +153,10 @@ def verify_post_stop(
     }
     listener_status = "measured"
     limitations: list[str] = []
+    restart_evidence: list[dict[str, Any]] = []
+    evidence_keys: set[tuple[str, int | None, int | None]] = set()
+    original_absent_observed = False
+    cancelled = False
     checks = 0
     started = monotonic()
     deadline = started + max(0.0, float(observation_seconds))
@@ -101,6 +175,16 @@ def verify_post_stop(
                     replacement_pids.add(pid)
             else:
                 surviving_pids.add(pid)
+        original_create_time = process_probe(original_pid) if original_pid > 0 else None
+        current_original_alive = bool(
+            original_create_time is not None
+            and (
+                expected_create_time is None
+                or abs(float(original_create_time) - float(expected_create_time)) <= 0.01
+            )
+        )
+        if not current_original_alive:
+            original_absent_observed = True
         try:
             listeners = listener_provider()
         except (psutil.Error, OSError) as exc:
@@ -116,12 +200,104 @@ def verify_post_stop(
             listener_pid = listener.get("pid")
             normalized_pid = int(listener_pid) if listener_pid is not None else None
             endpoint_seen[key].add(normalized_pid)
-            if normalized_pid is not None and normalized_pid not in target_pids:
-                replacement_pids.add(normalized_pid)
+            if original_absent_observed and (
+                normalized_pid is None or normalized_pid not in target_pids
+            ):
+                evidence_key = ("port_rebound", normalized_pid, key[1])
+                if evidence_key not in evidence_keys:
+                    evidence_keys.add(evidence_key)
+                    restart_evidence.append(
+                        {
+                            "type": "port_rebound",
+                            "detected_at": time.time(),
+                            "protocol": key[0],
+                            "port": key[1],
+                            "replacement_pid": normalized_pid,
+                            **(
+                                _parent_process_evidence(normalized_pid, original_parent_pid)
+                                if normalized_pid is not None
+                                else {
+                                    "replacement_parent_pid": None,
+                                    "replacement_parent_name": None,
+                                    "original_parent_pid": original_parent_pid,
+                                    "parent_changed": None,
+                                }
+                            ),
+                        }
+                    )
+                if normalized_pid is not None and normalized_pid not in target_pids:
+                    replacement_pids.add(normalized_pid)
+        if original_absent_observed and expected_command_hash:
+            try:
+                command_matches = command_match_provider(expected_command_hash)
+            except (psutil.Error, OSError):
+                command_matches = []
+                message = "无法在持续观察期间读取同命令哈希进程"
+                if message not in limitations:
+                    limitations.append(message)
+            for match in command_matches:
+                match_pid = int(match.get("pid") or 0)
+                match_created = match.get("create_time")
+                is_original_identity = bool(
+                    match_pid == original_pid
+                    and expected_create_time is not None
+                    and match_created is not None
+                    and abs(float(match_created) - float(expected_create_time)) <= 0.01
+                )
+                if match_pid <= 0 or is_original_identity or match_pid in target_pids:
+                    continue
+                evidence_key = ("command_hash_reappeared", match_pid, None)
+                if evidence_key in evidence_keys:
+                    continue
+                evidence_keys.add(evidence_key)
+                replacement_pids.add(match_pid)
+                parent_pid = int(match.get("ppid") or 0) or None
+                restart_evidence.append(
+                    {
+                        "type": "command_hash_reappeared",
+                        "detected_at": time.time(),
+                        "replacement_pid": match_pid,
+                        "replacement_parent_pid": parent_pid,
+                        "replacement_parent_name": None,
+                        "original_parent_pid": original_parent_pid,
+                        "parent_changed": bool(
+                            parent_pid is not None
+                            and original_parent_pid is not None
+                            and parent_pid != original_parent_pid
+                        ),
+                    }
+                )
         now = monotonic()
+        if progress_callback:
+            try:
+                progress_callback(
+                    {
+                        "checked_at": time.time(),
+                        "checks": checks,
+                        "remaining_seconds": round(max(0.0, deadline - now), 1),
+                        "original_pid_alive": current_original_alive,
+                        "original_pid_disappeared": original_absent_observed,
+                        "listener_status": listener_status,
+                        "restart_detected": bool(restart_evidence),
+                        "restart_evidence": restart_evidence[-5:],
+                    }
+                )
+            except Exception:
+                pass
+        if cancel_event and cancel_event.is_set():
+            cancelled = True
+            break
+        if stop_on_restart and restart_evidence:
+            break
         if now >= deadline:
             break
-        sleeper(min(max(0.01, poll_interval), max(0.0, deadline - now)))
+        delay = min(max(0.01, poll_interval), max(0.0, deadline - now))
+        if cancel_event is not None:
+            if cancel_event.wait(delay):
+                cancelled = True
+                break
+        else:
+            sleeper(delay)
 
     final_listeners: list[dict[str, Any]] = []
     try:
@@ -138,9 +314,36 @@ def verify_post_stop(
         ]
         pids = sorted({int(item["pid"]) for item in matches if item.get("pid") is not None})
         unknown_owner = any(item.get("pid") is None for item in matches)
-        for pid in pids:
-            if pid not in target_pids:
-                replacement_pids.add(pid)
+        if original_absent_observed and matches:
+            for pid in pids:
+                if pid not in target_pids:
+                    replacement_pids.add(pid)
+            replacement_pid = next((pid for pid in pids if pid not in target_pids), None)
+            if unknown_owner or replacement_pid is not None:
+                evidence_key = ("port_rebound", replacement_pid, int(endpoint["port"]))
+                if evidence_key not in evidence_keys:
+                    evidence_keys.add(evidence_key)
+                    restart_evidence.append(
+                        {
+                            "type": "port_rebound",
+                            "detected_at": time.time(),
+                            "protocol": endpoint["protocol"],
+                            "port": int(endpoint["port"]),
+                            "replacement_pid": replacement_pid,
+                            **(
+                                _parent_process_evidence(
+                                    replacement_pid, original_parent_pid
+                                )
+                                if replacement_pid is not None
+                                else {
+                                    "replacement_parent_pid": None,
+                                    "replacement_parent_name": None,
+                                    "original_parent_pid": original_parent_pid,
+                                    "parent_changed": None,
+                                }
+                            ),
+                        }
+                    )
         final_listeners.append(
             {
                 **endpoint,
@@ -165,15 +368,17 @@ def verify_post_stop(
     unknown_port = any(item.get("closed") is None for item in final_listeners)
     if original_alive or surviving_pids:
         outcome = "stop_incomplete"
-    elif replacement_pids:
+    elif restart_evidence:
         outcome = "relaunched"
+    elif cancelled:
+        outcome = "cancelled"
     elif any_port_open or unknown_port:
         outcome = "verification_partial"
     else:
         outcome = "stopped"
 
     return {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "service_id": service.get("id"),
         "service_fingerprint": service.get("fingerprint"),
         "original_pid": original_pid,
@@ -182,16 +387,20 @@ def verify_post_stop(
         "observation_window_seconds": round(max(0.0, monotonic() - started), 2),
         "checks": checks,
         "outcome": outcome,
+        "cancelled": cancelled,
+        "original_pid_disappeared": original_absent_observed,
         "original_pid_alive": original_alive,
         "surviving_pids": sorted(surviving_pids),
         "replacement_pids": sorted(replacement_pids),
-        "restart_detected": bool(replacement_pids),
-        "automatic_restart_evidence": "observed" if replacement_pids else "not_observed" if outcome == "stopped" else "unknown",
+        "restart_detected": bool(restart_evidence),
+        "restart_evidence": restart_evidence,
+        "parent_process_changed": any(item.get("parent_changed") is True for item in restart_evidence),
+        "automatic_restart_evidence": "observed" if restart_evidence else "not_observed" if outcome == "stopped" else "unknown",
         "endpoint_verification": final_listeners,
         "listener_status": listener_status,
         "second_stop_attempted": False,
         "limitations": limitations
-        + ["只观察有限时间窗；更晚发生的自动重启仍会由后续生命周期扫描记录"],
+        + ["只观察有限时间窗；更晚发生的自动重启不会由本次观察作出结论"],
     }
 
 

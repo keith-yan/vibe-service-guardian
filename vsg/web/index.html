@@ -44,6 +44,11 @@
       <button class="workspace-tab" type="button" data-view="operations" aria-controls="operations-view" aria-selected="false">事件与模型资产</button>
     </nav>
 
+    <section class="observation-bar" id="stop-observation-bar" role="status" aria-live="polite" hidden>
+      <div><strong id="stop-observation-title">正在持续观察停止结果</strong><span id="stop-observation-summary"></span></div>
+      <button class="button button-small" id="stop-observation-cancel" type="button">中止观察</button>
+    </section>
+
     <main>
       <section class="view-panel" id="services-view">
       <section class="summary-grid" aria-label="服务摘要">
@@ -161,7 +166,7 @@
 
         <section id="planner-results" hidden>
           <div class="ceiling-grid" aria-label="三层容量上限">
-            <article class="ceiling-card physical"><span class="ceiling-index">01</span><div><span class="card-kicker">PHYSICAL CEILING</span><h3>物理装载上限</h3><div id="ceiling-physical" class="ceiling-value">—</div><p>只说明权重、KV 与工作区理论上能否装下，可能很慢或需要混合卸载。</p></div></article>
+            <article class="ceiling-card physical"><span class="ceiling-index">01</span><div><span class="card-kicker">THEORETICAL CEILING</span><h3>理论容量上限</h3><div id="ceiling-physical" class="ceiling-value">—</div><p>只说明权重、KV 与工作区理论上能否装下；未故意制造 OOM，不代表实验证实的物理极限。</p></div></article>
             <article class="ceiling-card usable"><span class="ceiling-index">02</span><div><span class="card-kicker">USABLE CEILING</span><h3>实际可用上限</h3><div id="ceiling-usable" class="ceiling-value">—</div><p>当前可装入、至少 Q3、最低 2 tokens/s/用户且 TTFT 不超过 30 秒；不等于满足你的业务 SLA。</p></div></article>
             <article class="ceiling-card sla"><span class="ceiling-index">03</span><div><span class="card-kicker">SLA CEILING</span><h3>目标 SLA 上限</h3><div id="ceiling-sla" class="ceiling-value">—</div><p>Q4 以上，并同时满足当前空闲内存、并发、速度与首字延迟目标。</p></div></article>
           </div>
@@ -189,6 +194,13 @@
             <div><span class="card-kicker">LOCAL CALIBRATION</span><h3>用本机 llama-bench 校准</h3><p>可选操作。只接受本地 GGUF 绝对路径，必须输入确认短语；不联网、不下载、不保存绝对路径。</p></div>
             <div class="calibration-actions"><span id="benchmark-availability" class="source-badge">正在检测</span><button class="button" id="benchmark-button" type="button">运行短基准</button></div>
             <div id="benchmark-history" class="benchmark-history"></div>
+          </section>
+
+          <section class="calibration-section measured-profile-section">
+            <div><span class="card-kicker">MEASURED ON THIS MACHINE</span><h3>本机实测档案</h3><p id="measured-profile-margin">正在读取当前 RAM / VRAM 余量…</p></div>
+            <div id="measured-profile-summary" class="calibration-actions"></div>
+            <div class="profile-calibration-controls"><label class="field"><span>当前已加载模型</span><select id="planner-calibration-service"></select></label><button class="button" id="planner-calibrate-one" type="button">运行 60 秒单并发校准</button><button class="button" id="planner-calibrate-two" type="button">运行 60 秒双并发校准</button></div>
+            <div id="measured-profile-list" class="benchmark-history"></div>
           </section>
 
           <details class="assumption-panel"><summary>查看公式边界与全部假设</summary><ol id="planner-assumptions"></ol></details>
@@ -239,6 +251,11 @@
             </table>
             <div class="empty-state" id="runtime-health-empty" hidden><strong>未发现可探测的模型服务</strong><span>启动 Ollama、llama.cpp、vLLM、SGLang、LM Studio、TGI、KoboldCpp、MLX-LM 或 ComfyUI 后刷新。</span></div>
           </div>
+        </section>
+
+        <section class="health-section">
+          <div class="section-heading compact-heading"><div><div class="eyebrow"><span class="eyebrow-square"></span> PROJECT → INFERENCE · 项目推理关系</div><h2>项目、推理实例、实时负载与实测余量</h2></div><span class="confidence-note">并发余量仅在运行时暴露当前请求数且存在当前硬件有效实测档案时计算。</span></div>
+          <div class="table-shell"><table><thead><tr><th>项目 / Agent</th><th>推理实例</th><th>当前模型</th><th>实时负载</th><th>实测容量余量</th><th>风险</th></tr></thead><tbody id="project-runtime-body"></tbody></table><div class="empty-state" id="project-runtime-empty" hidden><strong>暂无项目—推理实例关系</strong><span>启动模型服务并完成项目归属后刷新。</span></div></div>
         </section>
 
         <section class="health-section health-two-column">
@@ -373,7 +390,7 @@
           <div id="timeline-list" class="timeline-list"></div>
         </section>
 
-        <details class="assumption-panel history-clear-panel"><summary>本机历史数据管理</summary><form id="history-clear-form" class="compact-form"><fieldset class="feature-field"><legend>选择清除范围</legend><label><input type="checkbox" name="history-category" value="timeline" checked> 时间线</label><label><input type="checkbox" name="history-category" value="telemetry" checked> 遥测样本</label><label><input type="checkbox" name="history-category" value="log_events"> 脱敏日志事件</label><label><input type="checkbox" name="history-category" value="model_inventory"> 模型盘点历史</label><label><input type="checkbox" name="history-category" value="benchmarks"> 模型基准</label><label><input type="checkbox" name="history-category" value="service_benchmarks"> 服务基准</label><label><input type="checkbox" name="history-category" value="stop_verifications"> 停止验证</label><label><input type="checkbox" name="history-category" value="impact_feedback"> 成效确认</label><label><input type="checkbox" name="history-category" value="observations"> 服务观察历史</label><label><input type="checkbox" name="history-category" value="audit"> 操作记录</label></fieldset><label class="field"><span>输入确认短语 CLEAR HISTORY</span><input id="history-clear-confirmation" autocomplete="off" spellcheck="false"></label><button class="button button-danger" type="submit">清除所选本机历史</button></form></details>
+        <details class="assumption-panel history-clear-panel"><summary>本机历史数据管理</summary><form id="history-clear-form" class="compact-form"><fieldset class="feature-field"><legend>选择清除范围</legend><label><input type="checkbox" name="history-category" value="timeline" checked> 时间线</label><label><input type="checkbox" name="history-category" value="telemetry" checked> 遥测样本</label><label><input type="checkbox" name="history-category" value="log_events"> 脱敏日志事件</label><label><input type="checkbox" name="history-category" value="model_inventory"> 模型盘点历史</label><label><input type="checkbox" name="history-category" value="benchmarks"> 模型基准</label><label><input type="checkbox" name="history-category" value="service_benchmarks"> 服务基准</label><label><input type="checkbox" name="history-category" value="calibration_profiles"> 本机实测档案</label><label><input type="checkbox" name="history-category" value="stop_verifications"> 停止验证</label><label><input type="checkbox" name="history-category" value="stop_observations"> 持续观察任务</label><label><input type="checkbox" name="history-category" value="impact_feedback"> 成效确认</label><label><input type="checkbox" name="history-category" value="observations"> 服务观察历史</label><label><input type="checkbox" name="history-category" value="audit"> 操作记录</label></fieldset><label class="field"><span>输入确认短语 CLEAR HISTORY</span><input id="history-clear-confirmation" autocomplete="off" spellcheck="false"></label><button class="button button-danger" type="submit">清除所选本机历史</button></form></details>
       </section>
     </main>
   </div>
@@ -405,11 +422,12 @@
       <div class="modal-content">
         <div class="warning-box" id="stop-summary">正在生成关停评估…</div>
         <div class="stop-assessment" id="stop-assessment"></div>
+        <label class="field" id="stop-observation-field"><span>停止后持续观察</span><select id="stop-observation-minutes"><option value="5">5 分钟</option><option value="15" selected>15 分钟（推荐）</option><option value="30">30 分钟</option></select></label>
         <label class="field" id="stop-confirmation-field"><span id="stop-prompt">请输入确认短语</span><input id="stop-confirmation" autocomplete="off" spellcheck="false"></label>
-        <p class="help-text">系统将在执行前再次校验 PID、启动时间、保护名单和目标来源。无法撤销。</p>
+        <p class="help-text">系统将在执行前再次校验 PID、启动时间、保护名单和目标来源。停止无法撤销；观察可随时中止，复活后不会自动二次停止。</p>
         <div class="stop-verification" id="stop-verification" hidden></div>
       </div>
-      <footer><button class="button" value="cancel" type="button" id="stop-cancel">关闭</button><button class="button button-danger" id="stop-submit" type="submit" disabled>确认停止</button></footer>
+      <footer><button class="button" value="cancel" type="button" id="stop-cancel">关闭</button><button class="button button-danger" id="stop-submit" type="submit" disabled>停止并观察</button></footer>
     </form>
   </dialog>
 
@@ -422,8 +440,11 @@
         <label class="field"><span>Agent 来源</span><input id="attribution-agent" maxlength="160" placeholder="Codex / Claude Code / OpenCode / Hermes"></label>
         <label class="field"><span>项目名称</span><input id="attribution-project-name" maxlength="160"></label>
         <label class="field"><span>项目绝对路径</span><input id="attribution-project-path" maxlength="1024" placeholder="必须位于设置中的项目根目录"></label>
+        <label class="field"><span>历史生命周期标签</span><select id="attribution-lifecycle-label"><option value="">不设置</option><option value="expected">标记为预期服务</option><option value="safe_cleanup">标记为可安全清理</option></select></label>
+        <label class="check-field"><input id="attribution-inherit" type="checkbox" checked><span>同可执行路径 + 同工作目录的后续进程继承标签</span></label>
         <label class="check-field"><input id="attribution-expected" type="checkbox"><span>这是预期服务</span></label>
         <label class="check-field"><input id="attribution-protected" type="checkbox"><span>保护，禁止从控制台停止</span></label>
+        <button class="button field-full" id="attribution-clear-label" type="button" hidden>撤销当前历史生命周期标签</button>
       </div>
       <footer><button class="button" value="cancel" type="button" id="attribution-cancel">取消</button><button class="button button-primary" type="submit">保存本机纠正规则</button></footer>
     </form>
@@ -451,6 +472,7 @@
         <label class="check-field"><input id="setting-docker" type="checkbox"><span>展示 Docker 容器</span></label>
         <label class="check-field" id="setting-wsl-field"><input id="setting-wsl" type="checkbox"><span>展示运行中的 WSL</span></label>
         <label class="check-field"><input id="setting-runtime-probes" type="checkbox"><span>启用模型运行时只读探测</span></label>
+        <label class="check-field"><input id="setting-system-notifications" type="checkbox"><span>复活时显示操作系统本机通知（可选）</span></label>
         <label class="field"><span>低磁盘空间阈值（GiB）</span><input id="setting-low-disk" type="number" min="1" max="4096"></label>
         <label class="field"><span>脱敏日志事件保留天数</span><input id="setting-log-retention" type="number" min="1" max="90"></label>
         <label class="field"><span>电价（每 kWh，仅用于 GPU 实测功耗积分）</span><input id="setting-electricity" type="number" min="0" max="100" step="0.01"></label>
@@ -503,7 +525,10 @@
     <form method="dialog" class="modal-frame" id="workload-matrix-form">
       <header><div><span class="modal-kicker">PREVIEWED CANCELLABLE WORKLOAD</span><h2 id="workload-matrix-title">分级工作负载矩阵</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="关闭">×</button></header>
       <div class="modal-content settings-grid">
-        <div class="warning-box field-full">计划固定为单请求、双并发和四并发三步。开始前完整预览；每步重查 RAM、VRAM、温度和磁盘护栏。中止采用协作式取消，已经发出的本机请求可能正常结束。</div>
+        <div class="warning-box field-full">“固定矩阵”用于比较负载；“60 秒本机校准”只测试已加载模型的单/双并发。开始前完整预览；RAM 或 VRAM 达到 85% 后停止发起新请求，不强杀已发出的推理。</div>
+        <label class="field"><span>负载模式</span><select id="workload-matrix-mode"><option value="matrix">固定三级矩阵</option><option value="calibration">60 秒本机校准</option></select></label>
+        <label class="field"><span>已加载模型</span><select id="workload-matrix-loaded-model"></select></label>
+        <label class="field" id="workload-calibration-concurrency-field" hidden><span>校准并发</span><select id="workload-calibration-concurrency"><option value="1">单并发</option><option value="2">双并发</option></select></label>
         <label class="field"><span>容量目录映射（可选）</span><select id="workload-matrix-model"><option value="">不映射，仅记录运行时性能</option></select></label>
         <label class="field"><span>量化版本</span><select id="workload-matrix-quant"><option value="Q3_K_M">Q3_K_M</option><option value="Q4_K_M" selected>Q4_K_M</option><option value="Q5_K_M">Q5_K_M</option><option value="Q6_K">Q6_K</option><option value="Q8_0">Q8_0</option><option value="FP16">FP16</option><option value="Q2_K">Q2_K</option></select></label>
         <button class="button field-full" id="workload-matrix-preview" type="button">生成或刷新预览</button>

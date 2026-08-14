@@ -13,7 +13,7 @@ from .privacy import ensure_private_directory, harden_private_file
 
 
 MAX_BENCHMARK_DETAILS_CHARS = 30_000
-CURRENT_SCHEMA_VERSION = 4
+CURRENT_SCHEMA_VERSION = 5
 
 
 class StorageError(RuntimeError):
@@ -156,6 +156,46 @@ CREATE TABLE IF NOT EXISTS stop_verifications (
 );
 CREATE INDEX IF NOT EXISTS stop_verification_recent
     ON stop_verifications(service_fingerprint, created_at DESC);
+CREATE TABLE IF NOT EXISTS stop_observations (
+    job_id TEXT PRIMARY KEY,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    deadline_at REAL NOT NULL,
+    status TEXT NOT NULL,
+    service_fingerprint TEXT NOT NULL,
+    service_id TEXT,
+    display_name TEXT,
+    project_name TEXT,
+    original_pid INTEGER NOT NULL,
+    observation_minutes INTEGER NOT NULL,
+    poll_seconds INTEGER NOT NULL,
+    result_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS stop_observation_recent
+    ON stop_observations(updated_at DESC);
+CREATE INDEX IF NOT EXISTS stop_observation_status
+    ON stop_observations(status, updated_at DESC);
+CREATE TABLE IF NOT EXISTS calibration_profiles (
+    profile_id TEXT PRIMARY KEY,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    hardware_fingerprint TEXT NOT NULL,
+    vram_total_gib REAL,
+    service_fingerprint TEXT NOT NULL,
+    runtime TEXT NOT NULL,
+    port INTEGER NOT NULL,
+    model_name TEXT NOT NULL,
+    catalog_model_id TEXT,
+    quantization TEXT,
+    concurrency INTEGER NOT NULL,
+    duration_seconds INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    result_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS calibration_profile_recent
+    ON calibration_profiles(updated_at DESC);
+CREATE INDEX IF NOT EXISTS calibration_profile_hardware
+    ON calibration_profiles(hardware_fingerprint, model_name, concurrency, updated_at DESC);
 CREATE TABLE IF NOT EXISTS log_watches (
     id TEXT PRIMARY KEY,
     created_at REAL NOT NULL,
@@ -385,6 +425,18 @@ class Storage:
             )
             return
         if target_version == 4:
+            self._execute_schema()
+            self._ensure_additive_columns()
+            self._connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS schema_migrations (
+                    version INTEGER PRIMARY KEY,
+                    applied_at REAL NOT NULL
+                )
+                """
+            )
+            return
+        if target_version == 5:
             self._execute_schema()
             self._ensure_additive_columns()
             self._connection.execute(
@@ -860,25 +912,33 @@ class Storage:
         return result
 
     def add_attribution_rule(self, rule: dict[str, Any]) -> int:
+        return self.add_attribution_rules([rule])[0]
+
+    def add_attribution_rules(self, rules: list[dict[str, Any]]) -> list[int]:
+        if not rules:
+            raise ValueError("至少需要一条归属规则")
         now = time.time()
+        identifiers: list[int] = []
         with self._lock, self._connection:
-            cursor = self._connection.execute(
-                """
-                INSERT INTO attribution_rules(
-                    created_at, updated_at, name, priority, enabled, match_json, override_json
-                ) VALUES(?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    now,
-                    now,
-                    str(rule["name"])[:160],
-                    int(rule.get("priority") or 100),
-                    int(bool(rule.get("enabled", True))),
-                    json.dumps(rule.get("match") or {}, ensure_ascii=False, sort_keys=True)[:4000],
-                    json.dumps(rule.get("override") or {}, ensure_ascii=False, sort_keys=True)[:4000],
-                ),
-            )
-            return int(cursor.lastrowid)
+            for rule in rules:
+                cursor = self._connection.execute(
+                    """
+                    INSERT INTO attribution_rules(
+                        created_at, updated_at, name, priority, enabled, match_json, override_json
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        now,
+                        now,
+                        str(rule["name"])[:160],
+                        int(rule.get("priority") or 100),
+                        int(bool(rule.get("enabled", True))),
+                        json.dumps(rule.get("match") or {}, ensure_ascii=False, sort_keys=True)[:4000],
+                        json.dumps(rule.get("override") or {}, ensure_ascii=False, sort_keys=True)[:4000],
+                    ),
+                )
+                identifiers.append(int(cursor.lastrowid))
+        return identifiers
 
     def delete_attribution_rule(self, rule_id: int) -> bool:
         with self._lock, self._connection:
@@ -886,6 +946,58 @@ class Storage:
                 "DELETE FROM attribution_rules WHERE id = ?", (int(rule_id),)
             )
             return bool(cursor.rowcount)
+
+    def remove_attribution_override(
+        self, rule_ids: Iterable[int], override_key: str
+    ) -> dict[str, list[int]]:
+        """Remove one override while preserving the rest of each local rule."""
+
+        if override_key not in {"lifecycle_label"}:
+            raise ValueError("不允许移除该归属覆盖字段")
+        identifiers = sorted({int(item) for item in rule_ids if int(item) > 0})
+        if not identifiers:
+            return {"deleted": [], "recreated": []}
+        deleted: list[int] = []
+        recreated: list[int] = []
+        now = time.time()
+        with self._lock, self._connection:
+            for rule_id in identifiers:
+                row = self._connection.execute(
+                    "SELECT * FROM attribution_rules WHERE id = ?", (rule_id,)
+                ).fetchone()
+                if not row:
+                    continue
+                try:
+                    override = json.loads(row["override_json"] or "{}")
+                except (json.JSONDecodeError, TypeError):
+                    override = {}
+                if override_key not in override:
+                    continue
+                override.pop(override_key, None)
+                self._connection.execute(
+                    "DELETE FROM attribution_rules WHERE id = ?", (rule_id,)
+                )
+                deleted.append(rule_id)
+                if override:
+                    cursor = self._connection.execute(
+                        """
+                        INSERT INTO attribution_rules(
+                            created_at, updated_at, name, priority, enabled,
+                            match_json, override_json
+                        ) VALUES(?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            float(row["created_at"]),
+                            now,
+                            str(row["name"])[:160],
+                            int(row["priority"]),
+                            int(row["enabled"]),
+                            str(row["match_json"])[:4000],
+                            json.dumps(override, ensure_ascii=False, sort_keys=True)[:4000],
+                        ),
+                    )
+                    recreated.append(int(cursor.lastrowid))
+        return {"deleted": deleted, "recreated": recreated}
 
     def add_timeline_event(self, event: dict[str, Any], dedup_seconds: float = 60.0) -> int:
         observed_at = float(event.get("observed_at") or time.time())
@@ -1312,6 +1424,221 @@ class Storage:
             items.append(result)
         return items
 
+    def upsert_stop_observation(self, job: dict[str, Any]) -> str:
+        required = {
+            "job_id",
+            "created_at",
+            "updated_at",
+            "deadline_at",
+            "status",
+            "service_fingerprint",
+            "original_pid",
+            "observation_minutes",
+            "poll_seconds",
+        }
+        if required - set(job):
+            raise ValueError("持续观察记录字段不完整")
+        status = str(job.get("status") or "")
+        if status not in {
+            "observing",
+            "cancel_requested",
+            "cancelled",
+            "completed",
+            "relaunched",
+            "evidence_insufficient",
+            "interrupted",
+            "failed",
+        }:
+            raise ValueError("持续观察状态无效")
+        encoded = json.dumps(job, ensure_ascii=False, separators=(",", ":"))
+        if len(encoded) > 30_000:
+            raise ValueError("持续观察记录过大")
+        job_id = str(job["job_id"])
+        if not job_id or len(job_id) > 100:
+            raise ValueError("持续观察 job_id 无效")
+        with self._lock, self._connection:
+            self._connection.execute(
+                """
+                INSERT INTO stop_observations(
+                    job_id, created_at, updated_at, deadline_at, status,
+                    service_fingerprint, service_id, display_name, project_name,
+                    original_pid, observation_minutes, poll_seconds, result_json
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(job_id) DO UPDATE SET
+                    updated_at = excluded.updated_at,
+                    deadline_at = excluded.deadline_at,
+                    status = excluded.status,
+                    result_json = excluded.result_json
+                """,
+                (
+                    job_id,
+                    float(job["created_at"]),
+                    float(job["updated_at"]),
+                    float(job["deadline_at"]),
+                    status,
+                    str(job["service_fingerprint"])[:128],
+                    str(job.get("service_id") or "")[:200] or None,
+                    str(job.get("display_name") or "")[:160] or None,
+                    str(job.get("project_name") or "")[:160] or None,
+                    int(job["original_pid"]),
+                    int(job["observation_minutes"]),
+                    int(job["poll_seconds"]),
+                    encoded,
+                ),
+            )
+        return job_id
+
+    def recent_stop_observations(
+        self, limit: int = 50, *, status: str | None = None
+    ) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit), 200))
+        with self._lock:
+            if status:
+                rows = self._connection.execute(
+                    """
+                    SELECT result_json FROM stop_observations
+                    WHERE status = ? ORDER BY updated_at DESC LIMIT ?
+                    """,
+                    (str(status)[:40], limit),
+                ).fetchall()
+            else:
+                rows = self._connection.execute(
+                    "SELECT result_json FROM stop_observations ORDER BY updated_at DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                value = json.loads(row["result_json"] or "{}")
+            except json.JSONDecodeError:
+                value = {}
+            if isinstance(value, dict):
+                items.append(value)
+        return items
+
+    def add_calibration_profile(self, profile: dict[str, Any]) -> str:
+        required = {
+            "profile_id",
+            "hardware_fingerprint",
+            "service_fingerprint",
+            "runtime",
+            "port",
+            "model_name",
+            "concurrency",
+            "duration_seconds",
+        }
+        if required - set(profile):
+            raise ValueError("本机实测档案字段不完整")
+        now = float(profile.get("updated_at") or time.time())
+        created_at = float(profile.get("created_at") or now)
+        status = str(profile.get("status") or "active")
+        if status not in {"active", "possibly_invalid", "expired"}:
+            raise ValueError("本机实测档案状态无效")
+        encoded = json.dumps(profile, ensure_ascii=False, separators=(",", ":"))
+        if len(encoded) > 30_000:
+            raise ValueError("本机实测档案过大")
+        profile_id = str(profile["profile_id"])
+        with self._lock, self._connection:
+            self._connection.execute(
+                """
+                INSERT INTO calibration_profiles(
+                    profile_id, created_at, updated_at, hardware_fingerprint,
+                    vram_total_gib, service_fingerprint, runtime, port,
+                    model_name, catalog_model_id, quantization, concurrency,
+                    duration_seconds, status, result_json
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    profile_id[:100],
+                    created_at,
+                    now,
+                    str(profile["hardware_fingerprint"])[:128],
+                    float(profile["vram_total_gib"])
+                    if profile.get("vram_total_gib") is not None
+                    else None,
+                    str(profile["service_fingerprint"])[:128],
+                    str(profile["runtime"])[:80],
+                    int(profile["port"]),
+                    str(profile["model_name"])[:180],
+                    str(profile.get("catalog_model_id") or "")[:128] or None,
+                    str(profile.get("quantization") or "")[:40] or None,
+                    int(profile["concurrency"]),
+                    int(profile["duration_seconds"]),
+                    status,
+                    encoded,
+                ),
+            )
+        return profile_id
+
+    def calibration_profiles(
+        self,
+        limit: int = 100,
+        *,
+        hardware_fingerprint: str | None = None,
+    ) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit), 300))
+        with self._lock:
+            if hardware_fingerprint:
+                rows = self._connection.execute(
+                    """
+                    SELECT result_json, status FROM calibration_profiles
+                    WHERE hardware_fingerprint = ? ORDER BY updated_at DESC LIMIT ?
+                    """,
+                    (hardware_fingerprint, limit),
+                ).fetchall()
+            else:
+                rows = self._connection.execute(
+                    """
+                    SELECT result_json, status FROM calibration_profiles
+                    ORDER BY updated_at DESC LIMIT ?
+                    """,
+                    (limit,),
+                ).fetchall()
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                value = json.loads(row["result_json"] or "{}")
+            except json.JSONDecodeError:
+                value = {}
+            if isinstance(value, dict):
+                value["status"] = str(row["status"])
+                items.append(value)
+        return items
+
+    def set_calibration_profile_status(self, profile_id: str, status: str) -> bool:
+        if status not in {"active", "possibly_invalid", "expired"}:
+            raise ValueError("本机实测档案状态无效")
+        with self._lock, self._connection:
+            row = self._connection.execute(
+                "SELECT result_json FROM calibration_profiles WHERE profile_id = ?",
+                (str(profile_id)[:100],),
+            ).fetchone()
+            if not row:
+                return False
+            try:
+                value = json.loads(row["result_json"] or "{}")
+            except json.JSONDecodeError:
+                value = {}
+            value["status"] = status
+            value["updated_at"] = time.time()
+            encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+            cursor = self._connection.execute(
+                """
+                UPDATE calibration_profiles
+                SET status = ?, updated_at = ?, result_json = ? WHERE profile_id = ?
+                """,
+                (status, float(value["updated_at"]), encoded, str(profile_id)[:100]),
+            )
+            return bool(cursor.rowcount)
+
+    def delete_calibration_profile(self, profile_id: str) -> bool:
+        with self._lock, self._connection:
+            cursor = self._connection.execute(
+                "DELETE FROM calibration_profiles WHERE profile_id = ?",
+                (str(profile_id)[:100],),
+            )
+            return bool(cursor.rowcount)
+
     def add_log_watch(self, watch: dict[str, Any]) -> str:
         required = {
             "id",
@@ -1528,6 +1855,8 @@ class Storage:
             "benchmarks": "model_benchmarks",
             "service_benchmarks": "service_benchmarks",
             "stop_verifications": "stop_verifications",
+            "stop_observations": "stop_observations",
+            "calibration_profiles": "calibration_profiles",
             "log_events": "log_events",
             "timeline": "timeline_events",
             "telemetry": "telemetry_samples",
@@ -1554,6 +1883,8 @@ class Storage:
             self._connection.execute("DELETE FROM model_benchmarks WHERE created_at < ?", (cutoff,))
             self._connection.execute("DELETE FROM service_benchmarks WHERE created_at < ?", (cutoff,))
             self._connection.execute("DELETE FROM stop_verifications WHERE created_at < ?", (cutoff,))
+            self._connection.execute("DELETE FROM stop_observations WHERE updated_at < ?", (cutoff,))
+            self._connection.execute("DELETE FROM calibration_profiles WHERE updated_at < ?", (cutoff,))
             self._connection.execute("DELETE FROM log_events WHERE last_seen < ?", (log_cutoff,))
             self._connection.execute("DELETE FROM timeline_events WHERE last_seen < ?", (cutoff,))
             self._connection.execute("DELETE FROM telemetry_samples WHERE observed_at < ?", (cutoff,))

@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import ipaddress
+import os
+import re
+import shlex
 import socket
+import subprocess
 from collections import defaultdict
 from typing import Any, Callable, Iterable
 
@@ -12,6 +16,132 @@ import psutil
 ConnectionProvider = Callable[[], Iterable[Any]]
 ProcessNameProvider = Callable[[int], str]
 LocalAddressProvider = Callable[[], Iterable[str]]
+CONTAINER_ID_RE = re.compile(r"^[a-f0-9]{12,64}$", re.IGNORECASE)
+
+
+def _display_command(arguments: list[str]) -> str:
+    if os.name == "nt":
+        return subprocess.list2cmdline(arguments)
+    return shlex.join(arguments)
+
+
+def recommended_operations(service: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return display-only lifecycle guidance; VSG never executes these items."""
+
+    source = str(service.get("source") or "")
+    metadata = service.get("metadata") or {}
+    process = service.get("process") or {}
+    agent = service.get("agent") or {}
+    pid = int(process.get("pid") or 0)
+    items: list[dict[str, Any]] = []
+
+    def add(
+        kind: str,
+        title: str,
+        instruction: str,
+        arguments: list[str] | None = None,
+    ) -> None:
+        items.append(
+            {
+                "kind": kind,
+                "title": title,
+                "instruction": instruction,
+                "argv": arguments,
+                "copy_text": _display_command(arguments) if arguments else None,
+                "will_execute": False,
+                "requires_manual_review": True,
+            }
+        )
+
+    if source == "docker":
+        compose_project = str(metadata.get("compose_project") or "")
+        compose_service = str(metadata.get("compose_service") or "")
+        if compose_project and compose_service:
+            arguments = [
+                "docker",
+                "compose",
+                "--project-name",
+                compose_project,
+                "stop",
+                compose_service,
+            ]
+            add(
+                "docker_compose",
+                "通过 Docker Compose 停止服务",
+                "先在 Compose 项目目录复核服务名与依赖，再复制命令执行。",
+                arguments,
+            )
+        container_id = str(metadata.get("container_id") or "")
+        if CONTAINER_ID_RE.fullmatch(container_id):
+            add(
+                "docker",
+                "通过 Docker Engine 停止容器",
+                "该命令只作为建议展示；请先检查重启策略。",
+                ["docker", "stop", container_id],
+            )
+    elif source == "wsl":
+        distro = str(metadata.get("distribution") or "")[:128]
+        linux_pid = int(metadata.get("linux_pid") or 0)
+        if distro and linux_pid > 0:
+            add(
+                "wsl",
+                "在对应 WSL 发行版中停止进程",
+                "请先在发行版内复核 PID 与进程身份；Windows PID 不能替代该 Linux PID。",
+                ["wsl.exe", "-d", distro, "--", "kill", "-TERM", str(linux_pid)],
+            )
+    elif source == "windows_service" or service.get("windows_services"):
+        names = [str(item)[:160] for item in service.get("windows_services") or []]
+        add(
+            "windows_service",
+            "通过 Windows 服务管理器停止",
+            f"打开 services.msc，定位“{names[0] if names else service.get('display_name')}”，复核依赖后停止。",
+            ["services.msc"],
+        )
+    elif source == "agent" or agent.get("provider"):
+        provider = str(agent.get("provider") or service.get("display_name") or "Agent/IDE")
+        add(
+            "agent_session",
+            f"在 {provider} 内结束对应会话",
+            "先保存未提交工作，再从原 Agent/IDE 会话终止任务或关闭对应终端。",
+        )
+
+    manager = str(metadata.get("lifecycle_manager") or "")
+    if manager == "systemd" and pid > 0:
+        add(
+            "systemd",
+            "先定位 systemd 托管单元",
+            "运行只读状态命令确认 unit 名称，再人工执行 systemctl stop <unit>。",
+            ["systemctl", "status", str(pid)],
+        )
+    elif manager == "launchd" and pid > 0:
+        add(
+            "launchd",
+            "先定位 launchd 标签",
+            "运行只读命令确认 domain/label，再人工使用 launchctl bootout。",
+            ["launchctl", "procinfo", str(pid)],
+        )
+    elif manager == "PM2":
+        add(
+            "pm2",
+            "通过 PM2 复核并停止应用",
+            "先运行 pm2 list 确认应用名，再人工执行 pm2 stop <app-name>。",
+            ["pm2", "list"],
+        )
+    elif manager == "supervisord":
+        add(
+            "supervisord",
+            "通过 Supervisor 复核托管任务",
+            "先查看状态确认任务名，再人工执行 supervisorctl stop <name>。",
+            ["supervisorctl", "status"],
+        )
+
+    if not items and service.get("protected"):
+        add(
+            "manual_review",
+            "从原启动入口结束服务",
+            "根据父进程证据回到原项目终端、IDE 或生命周期管理器人工停止。",
+        )
+    return items
 
 
 def _stable_id(prefix: str, value: str) -> str:
@@ -212,6 +342,10 @@ def build_stop_assessment(
         f"监听 {item['protocol']} {item['address']}:{item['port']}"
         for item in endpoints[:12]
     )
+    for parent in (service.get("ancestor_chain") or [])[:6]:
+        evidence.append(
+            f"父进程 PID {int(parent.get('pid') or 0)} {str(parent.get('name') or 'unknown')[:160]}"
+        )
 
     if blockers:
         decision = "blocked"
@@ -267,6 +401,7 @@ def build_stop_assessment(
             "steps": recovery_steps,
             "automatic_restart": False,
         },
+        "recommended_operations": recommended_operations(service),
         "limitations": [
             "评估只使用当前本机进程、端口、连接和已识别生命周期证据；无法证明外部客户端或脚本不存在",
             "恢复信息只用于人工复核，VSG 不自动重放命令",
@@ -279,6 +414,11 @@ def build_service_relationships(
     connection_provider: ConnectionProvider = _default_connections,
     process_name_provider: ProcessNameProvider = _default_process_name,
     local_address_provider: LocalAddressProvider = _default_local_addresses,
+    *,
+    runtime_probes: list[dict[str, Any]] | None = None,
+    telemetry: dict[str, Any] | None = None,
+    service_benchmarks: list[dict[str, Any]] | None = None,
+    calibration_profiles: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     dependencies, connection_status, limitations = _local_dependencies(
         services, connection_provider, process_name_provider, local_address_provider
@@ -388,12 +528,128 @@ def build_service_relationships(
     for node in nodes:
         if node.get("kind") == "service":
             node["decision"] = (assessments.get(str(node.get("id"))) or {}).get("decision")
+    probes_by_id = {
+        str(item.get("service_id")): item for item in (runtime_probes or [])
+    }
+    resources_by_id = {
+        str(item.get("service_id")): item
+        for item in ((telemetry or {}).get("service_resources") or {}).get("items") or []
+    }
+    latest_benchmark_by_fingerprint: dict[str, dict[str, Any]] = {}
+    for item in service_benchmarks or []:
+        fingerprint = str(item.get("service_fingerprint") or "")
+        if fingerprint and fingerprint not in latest_benchmark_by_fingerprint:
+            latest_benchmark_by_fingerprint[fingerprint] = item
+    valid_profiles_by_fingerprint: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for item in calibration_profiles or []:
+        fingerprint = str(item.get("service_fingerprint") or "")
+        if (
+            fingerprint
+            and item.get("validity", "valid") == "valid"
+            and item.get("measured_safe")
+        ):
+            valid_profiles_by_fingerprint[fingerprint].append(item)
+
+    global_memory_percent = ((telemetry or {}).get("memory") or {}).get(
+        "used_percent"
+    )
+    global_gpu_memory = [
+        float(item["memory_util_percent"])
+        for item in (telemetry or {}).get("gpus") or []
+        if item.get("memory_util_percent") is not None
+    ]
+    resource_guard_triggered = bool(
+        (
+            global_memory_percent is not None
+            and float(global_memory_percent) >= 85
+        )
+        or any(value >= 85 for value in global_gpu_memory)
+    )
+
+    project_runtime_views: list[dict[str, Any]] = []
+    for service in services:
+        if not (service.get("metadata") or {}).get("model_runtime"):
+            continue
+        service_id = str(service.get("id") or "")
+        fingerprint = str(service.get("fingerprint") or "")
+        probe = probes_by_id.get(service_id) or {}
+        performance = probe.get("performance") or {}
+        loaded_model_names = {
+            str(item.get("name") or "").casefold()
+            for item in probe.get("models") or []
+            if isinstance(item, dict) and item.get("name")
+        }
+        model_capacity_ambiguous = len(loaded_model_names) > 1
+        profile_candidates = [
+            item
+            for item in valid_profiles_by_fingerprint.get(fingerprint, [])
+            if len(loaded_model_names) == 1
+            and str(item.get("model_name") or "").casefold()
+            in loaded_model_names
+        ]
+        profile = max(
+            profile_candidates,
+            key=lambda item: (
+                int(item.get("recommended_safe_concurrency") or 0),
+                float(item.get("updated_at") or item.get("created_at") or 0),
+            ),
+            default=None,
+        )
+        running_requests = performance.get("requests_running")
+        measured_limit = int((profile or {}).get("recommended_safe_concurrency") or 0)
+        available_concurrency = (
+            0
+            if profile and resource_guard_triggered
+            else max(0, measured_limit - int(running_requests or 0))
+            if profile and running_requests is not None
+            else None
+        )
+        project_runtime_views.append(
+            {
+                "project": service.get("project") or {},
+                "agent": service.get("agent") or {},
+                "service": {
+                    "id": service_id,
+                    "fingerprint": fingerprint,
+                    "display_name": service.get("display_name"),
+                    "runtime": service.get("runtime"),
+                    "pid": (service.get("process") or {}).get("pid"),
+                    "endpoints": service.get("endpoints") or [],
+                },
+                "health": probe.get("health") or "unknown",
+                "model_load": probe.get("model_load") or {},
+                "models": probe.get("models") or [],
+                "performance": performance,
+                "resources": resources_by_id.get(service_id) or {},
+                "risk": service.get("risk") or {},
+                "security": probe.get("security") or {},
+                "latest_benchmark": latest_benchmark_by_fingerprint.get(fingerprint),
+                "calibration_profile": profile,
+                "capacity": {
+                    "source": "measured_local" if profile else "unavailable",
+                    "measured_safe_concurrency": measured_limit if profile else None,
+                    "requests_running": running_requests,
+                    "available_concurrency": available_concurrency,
+                    "resource_guard_triggered": resource_guard_triggered,
+                    "evidence_label": (
+                        "当前 RAM/VRAM 已触发 85% 护栏，不建议新增并发"
+                        if profile and resource_guard_triggered
+                        else "基于本机实测档案"
+                        if profile
+                        else "当前同时加载多个模型，实测档案不能直接推算余量"
+                        if model_capacity_ambiguous
+                        else "暂无当前模型和硬件均匹配的有效实测档案"
+                    ),
+                },
+            }
+        )
     return {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "nodes": nodes,
         "edges": edges,
         "dependencies": dependencies,
         "assessments": assessments,
+        "project_runtime_views": project_runtime_views,
         "summary": {
             "projects": sum(item.get("kind") == "project" for item in nodes),
             "agents": sum(item.get("kind") == "agent" for item in nodes),

@@ -18,7 +18,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import parse_qs, urlsplit
 
 from . import __version__
@@ -55,6 +55,11 @@ from .project_rules import AttributionRuleError, validate_rule_payload
 from .service_benchmark import ServiceBenchmarkError, run_service_benchmark
 from .service_relationships import build_service_relationships
 from .storage import Storage
+from .stop_observation import (
+    OBSERVATION_MINUTES,
+    StopObservationError,
+    StopObservationManager,
+)
 from .telemetry import TelemetryCollector
 from .timeline import TimelineTracker, build_incident_view
 from .trusted_nodes import TrustedNodeCollector
@@ -91,7 +96,13 @@ def configure_logging(data_dir: Path, verbose: bool = False) -> None:
 
 
 class Collector:
-    def __init__(self, config: AppConfig, storage: Storage, log_monitor: LogMonitor):
+    def __init__(
+        self,
+        config: AppConfig,
+        storage: Storage,
+        log_monitor: LogMonitor,
+        calibration_profile_provider: Callable[[], list[dict[str, Any]]] | None = None,
+    ):
         self.config = config
         self.storage = storage
         self.scanner = Scanner(config, storage)
@@ -100,6 +111,7 @@ class Collector:
         self.posture = PostureEvaluator()
         self.trusted_nodes = TrustedNodeCollector()
         self.log_monitor = log_monitor
+        self.calibration_profile_provider = calibration_profile_provider
         self.timeline = TimelineTracker(storage)
         self.snapshot: dict[str, Any] = {
             "schema_version": "1.1",
@@ -191,7 +203,24 @@ class Collector:
                 snapshot["trusted_nodes"] = self.trusted_nodes.collect(self.config.trusted_nodes)
                 self.timeline.observe(snapshot, telemetry)
                 snapshot["network_topology"] = build_network_topology(services, telemetry)
-                relationships = build_service_relationships(services)
+                if self.calibration_profile_provider:
+                    profiles = self.calibration_profile_provider()
+                else:
+                    profiles = self.storage.calibration_profiles(100)
+                    for profile in profiles:
+                        profile.setdefault(
+                            "validity",
+                            "valid"
+                            if profile.get("status") == "active"
+                            else profile.get("status"),
+                        )
+                relationships = build_service_relationships(
+                    services,
+                    runtime_probes=probes,
+                    telemetry=telemetry,
+                    service_benchmarks=self.storage.recent_service_benchmarks(100),
+                    calibration_profiles=profiles,
+                )
                 for service in services:
                     service["stop_assessment"] = (relationships.get("assessments") or {}).get(
                         service.get("id"), {}
@@ -228,14 +257,23 @@ class AppState:
         self.config = config
         self.storage = Storage(data_dir)
         self.log_monitor = LogMonitor(self.storage)
-        self.collector = Collector(config, self.storage, self.log_monitor)
         self.model_planner = ModelPlanner(self.storage)
+        self.collector = Collector(
+            config,
+            self.storage,
+            self.log_monitor,
+            lambda: self.model_planner.measured_profiles()["items"],
+        )
         self.workload_matrix = WorkloadMatrixManager(
             self.storage,
             self.collector.get_snapshot,
             self.model_planner.hardware,
             self.model_planner.predict_workload,
             lambda: float(self.config.low_disk_free_gib),
+        )
+        self.stop_observations = StopObservationManager(
+            self.storage,
+            notifications_enabled=lambda: bool(self.config.enable_system_notifications),
         )
         self.token = secrets.token_urlsafe(32)
         self.instance_id = secrets.token_urlsafe(18)
@@ -281,6 +319,41 @@ class AppState:
             },
         }
 
+    def model_planner_payload(self) -> dict[str, Any]:
+        payload = self.model_planner.status()
+        telemetry = self.collector.get_snapshot().get("telemetry") or {}
+        memory = telemetry.get("memory") or {}
+        gpus = telemetry.get("gpus") or []
+        payload["current_resource_margin"] = {
+            "captured_at": telemetry.get("captured_at"),
+            "ram": {
+                "available_gib": memory.get("available_gib"),
+                "available_percent": (
+                    round(100 - float(memory["used_percent"]), 1)
+                    if memory.get("used_percent") is not None
+                    else None
+                ),
+                "used_percent": memory.get("used_percent"),
+            },
+            "gpus": [
+                {
+                    "name": item.get("name"),
+                    "memory_free_gib": item.get("memory_free_gib"),
+                    "memory_total_gib": item.get("memory_total_gib"),
+                    "available_percent": (
+                        round(100 - float(item["memory_util_percent"]), 1)
+                        if item.get("memory_util_percent") is not None
+                        else None
+                    ),
+                    "used_percent": item.get("memory_util_percent"),
+                }
+                for item in gpus
+            ],
+            "guard_percent": 85,
+            "source": "current passive collector snapshot",
+        }
+        return payload
+
     def impact_report(self) -> dict[str, Any]:
         return build_impact_report(
             self.storage,
@@ -290,9 +363,10 @@ class AppState:
         )
 
     def close(self) -> None:
+        observations_stopped = self.stop_observations.close()
         matrix_stopped = self.workload_matrix.close()
         collector_stopped = self.collector.stop()
-        if matrix_stopped and collector_stopped:
+        if observations_stopped and matrix_stopped and collector_stopped:
             self.storage.close()
         else:
             LOGGER.warning(
@@ -543,7 +617,7 @@ class VSGHandler(BaseHTTPRequestHandler):
             )
             return
         if parsed.path == "/api/model-planner/status":
-            self._json(HTTPStatus.OK, {"ok": True, **self.state.model_planner.status()})
+            self._json(HTTPStatus.OK, {"ok": True, **self.state.model_planner_payload()})
             return
         if parsed.path == "/api/advisor/status":
             self._json(HTTPStatus.OK, {"ok": True, **self.state.advisor_payload()})
@@ -570,6 +644,19 @@ class VSGHandler(BaseHTTPRequestHandler):
                     "ok": True,
                     "items": self.state.storage.recent_stop_verifications(
                         50, fingerprint if isinstance(fingerprint, str) and fingerprint else None
+                    ),
+                },
+            )
+            return
+        if parsed.path == "/api/stop-observations":
+            query = parse_qs(parsed.query)
+            job_id = query.get("job_id", [None])[0]
+            self._json(
+                HTTPStatus.OK,
+                {
+                    "ok": True,
+                    **self.state.stop_observations.status(
+                        job_id if isinstance(job_id, str) and job_id else None
                     ),
                 },
             )
@@ -695,19 +782,113 @@ class VSGHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/service/attribute":
                 service = self._require_service(body)
-                raw_rule = {
-                    "name": body.get("name") or f"Attribution · {service.get('display_name') or service.get('fingerprint')}",
-                    "priority": body.get("priority") or 500,
-                    "match": {"fingerprint": service.get("fingerprint")},
-                    "override": body.get("override") or {},
-                }
-                rule = validate_rule_payload(raw_rule, self.state.config.project_roots)
-                rule_id = self.state.storage.add_attribution_rule(rule)
+                override = body.get("override") or {}
+                if not isinstance(override, dict):
+                    raise AttributionRuleError("override 必须是对象")
+                inherit_raw = body.get("inherit_similar", False)
+                if not isinstance(inherit_raw, bool):
+                    raise AttributionRuleError("inherit_similar 必须是布尔值")
+                inherit_similar = inherit_raw
+                lifecycle_label = str(override.get("lifecycle_label") or "")
+                if inherit_similar and not lifecycle_label:
+                    raise AttributionRuleError("只有历史生命周期标签可以继承到同类进程")
+                signature = str(
+                    (service.get("metadata") or {}).get("ownership_signature") or ""
+                )
+                if inherit_similar and not signature:
+                    raise AttributionRuleError(
+                        "当前进程缺少可执行路径或工作目录，不能创建可继承历史标签"
+                    )
+                current_rule = validate_rule_payload(
+                    {
+                        "name": body.get("name")
+                        or f"Attribution · {service.get('display_name') or service.get('fingerprint')}",
+                        "priority": (
+                            1000
+                            if lifecycle_label
+                            else body.get("priority") or 500
+                        ),
+                        "match": {"fingerprint": service.get("fingerprint")},
+                        "override": override,
+                    },
+                    self.state.config.project_roots,
+                )
+                rules = [current_rule]
+                if inherit_similar:
+                    rules.append(
+                        validate_rule_payload(
+                            {
+                                "name": f"Historical lifecycle inheritance · {service.get('display_name') or service.get('fingerprint')}",
+                                "priority": 900,
+                                "match": {"ownership_signature": signature},
+                                "override": {"lifecycle_label": lifecycle_label},
+                            },
+                            self.state.config.project_roots,
+                        )
+                    )
+                rule_ids = self.state.storage.add_attribution_rules(rules)
                 self.state.storage.add_audit(
-                    "service.attribution_corrected", service["id"], "success", {"rule_id": rule_id}
+                    "service.attribution_corrected",
+                    service["id"],
+                    "success",
+                    {
+                        "rule_ids": rule_ids,
+                        "inherit_similar": inherit_similar,
+                        "lifecycle_label": lifecycle_label or None,
+                    },
                 )
                 self.state.collector.request_refresh()
-                self._json(HTTPStatus.OK, {"ok": True, "id": rule_id, "rule": rule})
+                self._json(
+                    HTTPStatus.OK,
+                    {
+                        "ok": True,
+                        "id": rule_ids[0],
+                        "rule_ids": rule_ids,
+                        "rule": current_rule,
+                        "inherited_rule": rules[1] if len(rules) > 1 else None,
+                    },
+                )
+                return
+            if path == "/api/service/lifecycle-label/clear":
+                service = self._require_service(body)
+                signature = str(
+                    (service.get("metadata") or {}).get("ownership_signature") or ""
+                )
+                fingerprint = str(service.get("fingerprint") or "")
+                matching_rule_ids: list[int] = []
+                for rule in self.state.storage.attribution_rules():
+                    match = rule.get("match") or {}
+                    override = rule.get("override") or {}
+                    if not override.get("lifecycle_label"):
+                        continue
+                    if match.get("ownership_signature") == signature or match.get("fingerprint") == fingerprint:
+                        rule_id = int(rule.get("id") or 0)
+                        if rule_id > 0:
+                            matching_rule_ids.append(rule_id)
+                if not matching_rule_ids:
+                    raise AttributionRuleError("当前服务没有可撤销的历史生命周期标签")
+                rewrite = self.state.storage.remove_attribution_override(
+                    matching_rule_ids, "lifecycle_label"
+                )
+                deleted = rewrite["deleted"]
+                self.state.storage.add_audit(
+                    "service.lifecycle_label_clear",
+                    service["id"],
+                    "success",
+                    {
+                        "rule_ids": deleted,
+                        "preserved_rule_ids": rewrite["recreated"],
+                    },
+                )
+                self.state.collector.request_refresh()
+                self._json(
+                    HTTPStatus.OK,
+                    {
+                        "ok": True,
+                        "deleted_rule_ids": deleted,
+                        "preserved_rule_ids": rewrite["recreated"],
+                    },
+                )
                 return
             if path == "/api/model-inventory/scan":
                 result = scan_model_directory(
@@ -741,7 +922,8 @@ class VSGHandler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.OK, {"ok": True, "removed": result})
                 return
             if path == "/api/model-planner/refresh":
-                result = self.state.model_planner.refresh()
+                self.state.model_planner.refresh()
+                result = self.state.model_planner_payload()
                 self.state.storage.add_audit(
                     "model_planner.hardware_refresh",
                     str(result.get("hardware", {}).get("hardware_fingerprint") or "hardware"),
@@ -879,6 +1061,18 @@ class VSGHandler(BaseHTTPRequestHandler):
                     probe,
                     catalog_model_id=catalog_model_id,
                     quantization=quantization,
+                    mode=str(body.get("mode") or "matrix"),
+                    model_name=str(body.get("model_name") or "").strip() or None,
+                    concurrency=(
+                        int(body.get("concurrency"))
+                        if body.get("concurrency") is not None
+                        else None
+                    ),
+                    duration_seconds=(
+                        int(body.get("duration_seconds"))
+                        if body.get("duration_seconds") is not None
+                        else None
+                    ),
                 )
                 self.state.storage.add_audit(
                     "benchmark_matrix.preview",
@@ -888,6 +1082,7 @@ class VSGHandler(BaseHTTPRequestHandler):
                         "plan_id": plan.get("plan_id"),
                         "steps": len(plan.get("steps") or []),
                         "capacity_calibration": plan.get("capacity_calibration"),
+                        "mode": plan.get("mode"),
                     },
                 )
                 self._json(HTTPStatus.OK, {"ok": True, "plan": plan})
@@ -898,6 +1093,44 @@ class VSGHandler(BaseHTTPRequestHandler):
                     str(body.get("confirmation") or ""),
                 )
                 self._json(HTTPStatus.ACCEPTED, {"ok": True, "job": job})
+                return
+            if path == "/api/calibration-profiles/status":
+                profile_id = str(body.get("profile_id") or "")
+                if not 1 <= len(profile_id) <= 100 or any(
+                    character in profile_id for character in "\r\n\0"
+                ):
+                    raise ValueError("本机实测档案 ID 无效")
+                status = str(body.get("status") or "")
+                if status not in {"active", "expired"}:
+                    raise ValueError("档案状态只允许 active 或 expired")
+                updated = self.state.storage.set_calibration_profile_status(
+                    profile_id, status
+                )
+                if not updated:
+                    raise ValueError("本机实测档案不存在")
+                self.state.storage.add_audit(
+                    "calibration_profile.status",
+                    profile_id,
+                    "success",
+                    {"status": status},
+                )
+                self._json(HTTPStatus.OK, {"ok": True, "profile_id": profile_id, "status": status})
+                return
+            if path == "/api/calibration-profiles/delete":
+                profile_id = str(body.get("profile_id") or "")
+                if not 1 <= len(profile_id) <= 100 or any(
+                    character in profile_id for character in "\r\n\0"
+                ):
+                    raise ValueError("本机实测档案 ID 无效")
+                if str(body.get("confirmation") or "") != f"DELETE PROFILE {profile_id}":
+                    raise ValueError(f"确认短语必须是 DELETE PROFILE {profile_id}")
+                deleted = self.state.storage.delete_calibration_profile(profile_id)
+                if not deleted:
+                    raise ValueError("本机实测档案不存在")
+                self.state.storage.add_audit(
+                    "calibration_profile.delete", profile_id, "success"
+                )
+                self._json(HTTPStatus.OK, {"ok": True, "deleted": profile_id})
                 return
             if path == "/api/benchmark-matrix/cancel":
                 job = self.state.workload_matrix.cancel(str(body.get("job_id") or ""))
@@ -1021,6 +1254,12 @@ class VSGHandler(BaseHTTPRequestHandler):
                     raise ActionError("只允许停止普通宿主机开发/推理进程；Agent 本体、系统服务、Docker 和 WSL 仅展示")
                 if not service.get("metadata", {}).get("stoppable_candidate"):
                     raise ActionError("只允许停止已识别的开发或模型推理运行时；普通应用、LM Studio 主程序和系统进程仅展示")
+                try:
+                    observation_minutes = int(body.get("observation_minutes") or 15)
+                except (TypeError, ValueError) as exc:
+                    raise ActionError("观察时长必须是 5、15 或 30 分钟") from exc
+                if observation_minutes not in OBSERVATION_MINUTES:
+                    raise ActionError("观察时长必须是 5、15 或 30 分钟")
                 process = service["process"]
                 result = terminate_process_tree(
                     int(process["pid"]),
@@ -1029,31 +1268,99 @@ class VSGHandler(BaseHTTPRequestHandler):
                     self.state.config.protected_names,
                     already_protected=bool(service.get("protected")),
                 )
-                verification = verify_post_stop(
-                    service,
-                    [*result.get("terminated", []), *result.get("forced", [])],
-                )
+                affected_pids = [
+                    *result.get("terminated", []),
+                    *result.get("forced", []),
+                ]
+                try:
+                    verification = verify_post_stop(service, affected_pids)
+                except Exception as exc:
+                    verification = {
+                        "schema_version": "1.1",
+                        "service_id": service.get("id"),
+                        "service_fingerprint": service.get("fingerprint"),
+                        "original_pid": int(process.get("pid") or 0),
+                        "checked_at": time.time(),
+                        "observation_window_seconds": 0,
+                        "checks": 0,
+                        "outcome": "verification_partial",
+                        "restart_detected": False,
+                        "replacement_pids": [],
+                        "endpoint_verification": [],
+                        "second_stop_attempted": False,
+                        "limitations": [
+                            f"停止动作已经完成，但即时验证失败：{type(exc).__name__}"
+                        ],
+                    }
                 if result.get("errors"):
                     verification.setdefault("limitations", []).extend(result["errors"])
-                verification["id"] = self.state.storage.add_stop_verification(verification)
+                try:
+                    verification["id"] = self.state.storage.add_stop_verification(
+                        verification
+                    )
+                except Exception as exc:
+                    verification["id"] = None
+                    verification.setdefault("limitations", []).append(
+                        f"停止验证未能写入本机历史：{type(exc).__name__}"
+                    )
                 result["verification"] = verification
-                self.state.storage.add_audit(
-                    "process.stop",
-                    service["id"],
-                    "success" if verification.get("outcome") == "stopped" else str(verification.get("outcome") or "unknown"),
-                    {
-                        "pid": process["pid"],
-                        "terminated": result.get("terminated"),
-                        "forced": result.get("forced"),
-                        "action_completed": result.get("completed"),
-                        "action_errors": result.get("errors"),
-                        "verification_id": verification.get("id"),
-                        "verification_outcome": verification.get("outcome"),
-                        "replacement_pids": verification.get("replacement_pids"),
-                    },
-                )
+                try:
+                    observation = self.state.stop_observations.start(
+                        service,
+                        affected_pids,
+                        observation_minutes,
+                    )
+                except Exception as exc:
+                    # The destructive action has already completed.  Never turn
+                    # an observation start failure into a misleading "stop
+                    # failed" response; return the partial result explicitly.
+                    observation = {
+                        "job_id": f"failed-to-start-{secrets.token_urlsafe(8)}",
+                        "status": "failed_to_start",
+                        "observation_minutes": observation_minutes,
+                        "original_pid": int(process.get("pid") or 0),
+                        "display_name": service.get("display_name"),
+                        "project_name": (service.get("project") or {}).get("name"),
+                        "port_state": "unknown",
+                        "error": type(exc).__name__,
+                        "limitations": [
+                            "进程停止动作已经完成，但持续观察任务未能启动；请立即刷新服务状态并人工复核端口。"
+                        ],
+                    }
+                result["observation"] = observation
+                try:
+                    self.state.storage.add_audit(
+                        "process.stop",
+                        service["id"],
+                        "success" if verification.get("outcome") == "stopped" else str(verification.get("outcome") or "unknown"),
+                        {
+                            "pid": process["pid"],
+                            "terminated": result.get("terminated"),
+                            "forced": result.get("forced"),
+                            "action_completed": result.get("completed"),
+                            "action_errors": result.get("errors"),
+                            "verification_id": verification.get("id"),
+                            "verification_outcome": verification.get("outcome"),
+                            "replacement_pids": verification.get("replacement_pids"),
+                            "observation_job_id": observation.get("job_id"),
+                            "observation_status": observation.get("status"),
+                            "observation_minutes": observation.get("observation_minutes"),
+                        },
+                    )
+                except Exception:
+                    LOGGER.warning("process stop audit write failed", exc_info=True)
                 self.state.collector.request_refresh()
                 self._json(HTTPStatus.OK, {"ok": True, "result": result})
+                return
+            if path == "/api/stop-observations/cancel":
+                job = self.state.stop_observations.cancel(str(body.get("job_id") or ""))
+                self.state.storage.add_audit(
+                    "stop_observation.cancel",
+                    str(job.get("service_id") or job.get("service_fingerprint")),
+                    "requested",
+                    {"job_id": job.get("job_id")},
+                )
+                self._json(HTTPStatus.ACCEPTED, {"ok": True, "job": job})
                 return
             if path == "/api/open/path":
                 service = self._require_service(body)
@@ -1093,6 +1400,7 @@ class VSGHandler(BaseHTTPRequestHandler):
             ModelInventoryError,
             ServiceBenchmarkError,
             WorkloadMatrixError,
+            StopObservationError,
             TypeError,
             ValueError,
         ) as exc:

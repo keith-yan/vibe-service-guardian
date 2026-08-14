@@ -191,7 +191,7 @@ try {
         $null -eq $Status.snapshot.posture.overall.unknown_domain_count -or
         $null -eq $Status.snapshot.runtime_probes -or
         $null -eq $Status.snapshot.trusted_nodes -or
-        $Status.snapshot.service_relationships.schema_version -ne '1.0'
+        $Status.snapshot.service_relationships.schema_version -ne '1.1'
     ) {
         throw 'The AI runtime health snapshot is incomplete.'
     }
@@ -199,6 +199,7 @@ try {
     $Snapshots = Invoke-RestMethod -Uri ($BaseUrl + '/api/snapshots') -TimeoutSec 3
     $Relationships = Invoke-RestMethod -Uri ($BaseUrl + '/api/service-relationships') -TimeoutSec 3
     $StopVerifications = Invoke-RestMethod -Uri ($BaseUrl + '/api/stop-verifications') -TimeoutSec 3
+    $StopObservations = Invoke-RestMethod -Uri ($BaseUrl + '/api/stop-observations') -TimeoutSec 3
     $MatrixStatus = Invoke-RestMethod -Uri ($BaseUrl + '/api/benchmark-matrix/status') -TimeoutSec 3
     $AssessmentCount = @($Relationships.relationships.assessments.PSObject.Properties).Count
     if (
@@ -206,12 +207,13 @@ try {
         $Snapshots.ok -ne $true -or
         $Relationships.ok -ne $true -or
         $StopVerifications.ok -ne $true -or
+        $StopObservations.ok -ne $true -or
         $MatrixStatus.ok -ne $true
     ) {
         throw 'A history, relationship, or workload-matrix read endpoint failed.'
     }
     if (
-        $Relationships.relationships.schema_version -ne '1.0' -or
+        $Relationships.relationships.schema_version -ne '1.1' -or
         [int]$Relationships.relationships.summary.services -ne [int]$Status.snapshot.summary.services -or
         $AssessmentCount -ne [int]$Status.snapshot.summary.services
     ) {
@@ -219,6 +221,8 @@ try {
     }
     if (
         @($StopVerifications.items).Count -ne 0 -or
+        @($StopObservations.items).Count -ne 0 -or
+        @($StopObservations.active).Count -ne 0 -or
         $null -ne $MatrixStatus.active_job_id -or
         $null -ne $MatrixStatus.job
     ) {
@@ -239,7 +243,10 @@ try {
         $PlannerStatus.hardware.platform.key -ne 'windows' -or
         [int]$PlannerStatus.catalog.model_count -lt 10 -or
         $PlannerStatus.catalog.offline -ne $true -or
-        $PlannerStatus.privacy.telemetry -ne $false
+        $PlannerStatus.privacy.telemetry -ne $false -or
+        $null -eq $PlannerStatus.measured_profiles.items -or
+        $null -eq $PlannerStatus.measured_profiles.summary.valid -or
+        $null -eq $PlannerStatus.current_resource_margin.guard_percent
     ) {
         throw 'Model planner status did not return the expected offline Windows contract.'
     }
@@ -322,7 +329,9 @@ try {
         relationship_dependencies = [int]$Relationships.relationships.summary.local_dependencies
         stop_assessments = $AssessmentCount
         stop_verification_history = @($StopVerifications.items).Count
+        stop_observation_history = @($StopObservations.items).Count
         benchmark_matrix_idle = ($null -eq $MatrixStatus.active_job_id -and $null -eq $MatrixStatus.job)
+        measured_profile_count = @($PlannerStatus.measured_profiles.items).Count
         calibration_samples = [int]$Estimate.estimate.calibration_summary.available_samples
         calibrated_candidates = [int]$Estimate.estimate.calibration_summary.calibrated_candidates
         telemetry_gpu_count = @($Status.snapshot.telemetry.gpus).Count

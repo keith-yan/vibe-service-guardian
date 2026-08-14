@@ -2,7 +2,7 @@
 
 This roadmap describes intended work, not commitments or completed adoption. Priorities are set by user safety, decision value, evidence quality, and cross-platform correctness.
 
-## 0.8.3 — local Alpha convergence (current, unreleased)
+## 0.8.3 — local Alpha convergence (completed local milestone, not published)
 
 - Explainable service ownership, stale assessment, stop impact, bounded stop verification, and recovery guidance.
 - Local model capacity planning, runtime health, fixed workload matrix, and prediction-error calibration.
@@ -12,7 +12,16 @@ This roadmap describes intended work, not commitments or completed adoption. Pri
 
 Exit criteria: all local automated gates pass; current-host portable path is rebuilt and smoke-tested; unsupported real-platform claims remain explicitly unverified.
 
-## 0.8.4 — native acceptance and defect closure
+## 0.8.4 — bounded daily-use P0 closure (current, unreleased)
+
+- Observe a stopped host service for a user-selected 5/15/30-minute window and report evidence-backed relaunch without a second automatic stop.
+- Reuse explicit user lifecycle labels through a one-way executable-path and working-directory identity while preserving every existing stop guard.
+- Calibrate an already loaded local model for 60 seconds at concurrency 1 or 2 and persist hardware-bound measured profiles.
+- Connect project ownership, inference health, live requests, measured capacity headroom, and prediction error in one view.
+
+Exit criteria: P0-specific tests and the full local gate pass; the Windows portable package is rebuilt and smoke-tested; no P1 feature or target-platform claim is silently included.
+
+## 0.8.5 — low-friction startup and native acceptance
 
 - Execute Windows 10/11, Apple Silicon macOS, Intel macOS, Ubuntu/Linux x86_64, and Linux arm64 acceptance on real hardware.
 - Validate real Hermes and OpenCode schema variants and downgrade behavior.

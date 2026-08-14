@@ -47,7 +47,14 @@ def validate_rule_payload(raw: dict[str, Any], project_roots: Iterable[str]) -> 
     if not isinstance(match_raw, dict) or not isinstance(override_raw, dict):
         raise AttributionRuleError("match 和 override 必须是对象")
     match: dict[str, Any] = {}
-    for key in ("fingerprint", "exe_contains", "cwd_prefix", "command_contains", "runtime"):
+    for key in (
+        "fingerprint",
+        "ownership_signature",
+        "exe_contains",
+        "cwd_prefix",
+        "command_contains",
+        "runtime",
+    ):
         value = _text(match_raw.get(key), f"match.{key}")
         if value:
             match[key] = value
@@ -79,6 +86,11 @@ def validate_rule_payload(raw: dict[str, Any], project_roots: Iterable[str]) -> 
             if not isinstance(override_raw[key], bool):
                 raise AttributionRuleError(f"override.{key} 必须是布尔值")
             override[key] = override_raw[key]
+    lifecycle_label = _text(override_raw.get("lifecycle_label"), "override.lifecycle_label", 40)
+    if lifecycle_label:
+        if lifecycle_label not in {"expected", "safe_cleanup"}:
+            raise AttributionRuleError("override.lifecycle_label 必须是 expected 或 safe_cleanup")
+        override["lifecycle_label"] = lifecycle_label
     if not override:
         raise AttributionRuleError("归属规则至少需要一个覆盖结果")
     return {
@@ -99,6 +111,7 @@ def rule_matches(service: ServiceRecord, rule: dict[str, Any]) -> bool:
     endpoints = service.endpoints
     checks = {
         "fingerprint": service.fingerprint.lower(),
+        "ownership_signature": str(service.metadata.get("ownership_signature") or "").lower(),
         "exe_contains": (process.exe or process.name).lower(),
         "cwd_prefix": (process.cwd or "").lower(),
         "command_contains": command,
@@ -109,7 +122,7 @@ def rule_matches(service: ServiceRecord, rule: dict[str, Any]) -> bool:
         if expected is None:
             continue
         expected_text = str(expected).lower()
-        if key in {"fingerprint", "runtime"}:
+        if key in {"fingerprint", "ownership_signature", "runtime"}:
             if actual != expected_text:
                 return False
         elif key == "cwd_prefix":
@@ -153,6 +166,16 @@ def apply_rules(service: ServiceRecord, rules: Iterable[dict[str, Any]]) -> list
         service.project.evidence.append(f"本地规则：{rule_name}")
         service.metadata["attribution_source"] = "local_rule"
         service.metadata["attribution_rule_note"] = override.get("note")
+        lifecycle_label = override.get("lifecycle_label")
+        if lifecycle_label:
+            service.metadata["historical_lifecycle_label"] = lifecycle_label
+            service.metadata["historical_label_inherited"] = bool(
+                (rule.get("match") or {}).get("ownership_signature")
+            )
+            if "user_history_mark" not in service.tags:
+                service.tags.append("user_history_mark")
+            if lifecycle_label == "expected":
+                service.expected = True
         matched.append(str(rule.get("id") or rule_name))
         break
     return matched
