@@ -526,6 +526,25 @@ def _runtime_capabilities(gpus: list[dict[str, Any]], system_key: str) -> list[d
     return capabilities
 
 
+def _cpu_max_frequency_mhz() -> float | None:
+    """Return a measured maximum CPU frequency when psutil exposes it."""
+
+    cpu_freq = getattr(psutil, "cpu_freq", None)
+    if not callable(cpu_freq):
+        return None
+    try:
+        frequency = cpu_freq()
+    except (AttributeError, NotImplementedError, OSError, psutil.Error):
+        return None
+    if frequency is None:
+        return None
+    try:
+        maximum = float(frequency.max)
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return round(maximum, 0) if maximum > 0 else None
+
+
 def collect_hardware(
     system: str | None = None,
     machine: str | None = None,
@@ -572,6 +591,7 @@ def collect_hardware(
         warnings.append("检测到实验性 GPU 路径；性能结论必须用本机基准校准")
 
     cpu_bandwidth, cpu_bandwidth_source = _cpu_bandwidth_estimate(cpu_name, total_memory_gib)
+    max_frequency_mhz = _cpu_max_frequency_mhz()
     disk_path = Path(os.environ.get("SystemDrive", "C:") + "\\") if system_key == "windows" else Path("/")
     try:
         disk = psutil.disk_usage(str(disk_path))
@@ -596,7 +616,7 @@ def collect_hardware(
             "name": cpu_name,
             "physical_cores": psutil.cpu_count(logical=False),
             "logical_cores": psutil.cpu_count(logical=True),
-            "max_frequency_mhz": round(psutil.cpu_freq().max, 0) if psutil.cpu_freq() else None,
+            "max_frequency_mhz": max_frequency_mhz,
             "memory_bandwidth_gbps_estimate": cpu_bandwidth,
             "bandwidth_source": cpu_bandwidth_source,
         },

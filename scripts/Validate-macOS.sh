@@ -80,7 +80,7 @@ data_dir = Path(sys.argv[1])
 runtime = json.loads((data_dir / "runtime.json").read_text(encoding="utf-8"))
 base = f"http://127.0.0.1:{runtime['port']}"
 last_error = None
-for _ in range(30):
+for _ in range(120):
     try:
         with urllib.request.urlopen(base + "/healthz", timeout=1) as response:
             health = json.loads(response.read().decode("utf-8"))
@@ -88,6 +88,9 @@ for _ in range(30):
             bootstrap = json.loads(response.read().decode("utf-8"))
         with urllib.request.urlopen(base + "/api/status", timeout=1) as response:
             payload = json.loads(response.read().decode("utf-8"))
+        snapshot = payload.get("snapshot") or {}
+        if snapshot.get("generated_at") is None:
+            raise RuntimeError("first collector snapshot is not ready")
         with urllib.request.urlopen(base + "/api/model-planner/status", timeout=15) as response:
             planner = json.loads(response.read().decode("utf-8"))
         estimate_request = urllib.request.Request(
@@ -115,7 +118,7 @@ for _ in range(30):
         break
     except Exception as exc:
         last_error = exc
-        time.sleep(0.2)
+        time.sleep(0.125)
 else:
     raise SystemExit(f"status API unavailable: {last_error}")
 

@@ -41,7 +41,7 @@ done
 PYTHON_BIN=${PYTHON_BIN:-python3}
 PORT=$("$PYTHON_BIN" -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["port"])' "$RUNTIME")
 "$PYTHON_BIN" - "$PORT" <<'PY'
-import json, sys, urllib.request
+import json, sys, time, urllib.request
 port = int(sys.argv[1]); base = f"http://127.0.0.1:{port}"
 def get(path):
     with urllib.request.urlopen(base + path, timeout=5) as response:
@@ -54,8 +54,19 @@ status, _, i18n = get('/assets/i18n.js')
 assert status == 200 and b'Service Monitor' in i18n
 status, _, raw = get('/api/bootstrap')
 bootstrap = json.loads(raw); assert bootstrap['platform']['key'] == 'linux' and bootstrap['platform']['supported'] is True
-status, _, raw = get('/api/status')
-snapshot = json.loads(raw)['snapshot']; assert snapshot['collectors']['host']['method'] == 'psutil'
+snapshot = None
+for _ in range(120):
+    status, _, raw = get('/api/status')
+    assert status == 200
+    candidate = json.loads(raw)['snapshot']
+    if candidate.get('generated_at') is not None:
+        snapshot = candidate
+        break
+    time.sleep(0.125)
+if snapshot is None:
+    raise AssertionError('first collector snapshot did not complete within 15 seconds')
+host_collector = snapshot.get('collectors', {}).get('host')
+assert host_collector and host_collector.get('method') == 'psutil', snapshot.get('collectors')
 assert snapshot['telemetry']['hardware']['platform'] == 'Linux'
 print(json.dumps({'ok': True, 'port': port, 'platform': bootstrap['platform'], 'services': snapshot['summary']['services']}, ensure_ascii=False))
 PY

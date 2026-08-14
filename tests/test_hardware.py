@@ -2,7 +2,10 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
+from vsg import hardware
 from vsg.hardware import (
     parse_linux_pci_devices,
     parse_nvidia_smi,
@@ -12,6 +15,25 @@ from vsg.hardware import (
 
 
 class HardwareTests(unittest.TestCase):
+    def test_cpu_frequency_is_unknown_when_psutil_does_not_expose_probe(self):
+        with patch.object(hardware.psutil, "cpu_freq", None, create=True):
+            self.assertIsNone(hardware._cpu_max_frequency_mhz())
+
+    def test_cpu_frequency_probe_is_called_once(self):
+        probe = Mock(return_value=SimpleNamespace(max=4200.4))
+        with patch.object(hardware.psutil, "cpu_freq", probe, create=True):
+            self.assertEqual(hardware._cpu_max_frequency_mhz(), 4200.0)
+        probe.assert_called_once_with()
+
+    def test_cpu_frequency_not_implemented_is_unknown(self):
+        with patch.object(
+            hardware.psutil,
+            "cpu_freq",
+            side_effect=NotImplementedError,
+            create=True,
+        ):
+            self.assertIsNone(hardware._cpu_max_frequency_mhz())
+
     def test_nvidia_smi_reports_measured_memory(self):
         items = parse_nvidia_smi("NVIDIA GeForce RTX 4090, 24564, 22000, 590.12, 8.9\n")
         self.assertEqual(len(items), 1)

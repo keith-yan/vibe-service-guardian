@@ -35,6 +35,6 @@
     "requirements-build-linux.txt": "dbef6703d1a65f926432762e6978b716973e3e3ff4caea902e6b9f7339964eac",
     "requirements-build-macos.txt": "310976e1c3b08acfa89cf4698517154cdc8f8b685ef4b666a0a347f1951613ff",
     "requirements-build.txt": "426d97839544a7e52c918c9fd7738de67a82db7e3c6a1b75fb6762566968b8f7",
-    "requirements.txt": "a6414a873f6964b99b5d329845e309ee7201cb4c2eaace1dabe6b47d8b23a47d"
+    "requirements.txt": "ce972e5602f1badf47b56ce597ebf4a3cbc516ca6c8979c95ee75c067d275840"
   }
 }
