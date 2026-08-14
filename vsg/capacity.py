@@ -604,7 +604,18 @@ def _command_plan(
     runtimes: list[dict[str, Any]],
 ) -> dict[str, Any]:
     if not candidate:
-        return {"runtime": runtime, "available": False, "reason": "没有满足 SLA 的模型，先降低并发/上下文/速度目标"}
+        return {
+            "runtime": runtime,
+            "available": False,
+            "installed": False,
+            "support_tier": "unavailable",
+            "template_only": True,
+            "will_execute": False,
+            "command": [],
+            "display": "",
+            "binding": "127.0.0.1:8080",
+            "reason": "没有满足 SLA 的模型，先降低并发/上下文/速度目标",
+        }
     installed = next((item for item in runtimes if item.get("id") == runtime), None)
     context = int(workload["context_tokens"])
     concurrency = int(workload["concurrency"])

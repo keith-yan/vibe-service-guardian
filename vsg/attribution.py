@@ -156,9 +156,12 @@ def _project_from_candidate(candidate: str, roots: list[str]) -> tuple[str | Non
         return None, 0, None
 
     for root_value in sorted(roots, key=len, reverse=True):
-        if not _is_under(str(resolved), root_value):
+        try:
+            root = Path(root_value).expanduser().resolve(strict=False)
+        except (OSError, ValueError):
             continue
-        root = Path(root_value).resolve(strict=False)
+        if not _is_under(str(resolved), str(root)):
+            continue
         current = resolved
         while _is_under(str(current), str(root)):
             if _has_marker(current):

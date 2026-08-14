@@ -458,6 +458,29 @@ def _collect_sensors() -> dict[str, Any]:
     }
 
 
+def _cpu_frequencies_mhz() -> tuple[float | None, float | None]:
+    """Return current/max CPU frequency only when psutil supports the probe."""
+
+    reader = getattr(psutil, "cpu_freq", None)
+    if not callable(reader):
+        return None, None
+    try:
+        frequency = reader()
+    except (AttributeError, NotImplementedError, OSError, psutil.Error):
+        return None, None
+    if frequency is None:
+        return None, None
+
+    def measured(name: str) -> float | None:
+        try:
+            value = float(getattr(frequency, name))
+        except (AttributeError, TypeError, ValueError):
+            return None
+        return round(value, 0) if value > 0 else None
+
+    return measured("current"), measured("max")
+
+
 def _remote_scope(address: str) -> str:
     try:
         value = ipaddress.ip_address(address.split("%", 1)[0])
@@ -706,7 +729,7 @@ class TelemetryCollector:
         now = time.time()
         memory = psutil.virtual_memory()
         swap = psutil.swap_memory()
-        frequency = psutil.cpu_freq()
+        current_frequency_mhz, max_frequency_mhz = _cpu_frequencies_mhz()
         gpus = self._gpus(now)
         measured_power = sum(float(item["power_w"]) for item in gpus if item.get("power_w") is not None)
         if self._last_power_at is not None and 0 < now - self._last_power_at <= 120 and measured_power:
@@ -723,8 +746,8 @@ class TelemetryCollector:
                 "percent": round(float(psutil.cpu_percent(interval=0.1)), 1),
                 "logical_cores": psutil.cpu_count(logical=True),
                 "physical_cores": psutil.cpu_count(logical=False),
-                "current_frequency_mhz": round(float(frequency.current), 0) if frequency else None,
-                "max_frequency_mhz": round(float(frequency.max), 0) if frequency else None,
+                "current_frequency_mhz": current_frequency_mhz,
+                "max_frequency_mhz": max_frequency_mhz,
                 "load_average": list(os.getloadavg()) if hasattr(os, "getloadavg") else None,
                 "power_w": None,
                 "power_status": "unavailable",

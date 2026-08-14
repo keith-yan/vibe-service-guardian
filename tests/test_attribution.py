@@ -18,7 +18,8 @@ class AttributionTests(unittest.TestCase):
             (project / ".git").mkdir()
             process = ProcessSnapshot(pid=10, name="node.exe", cwd=str(nested), cmdline=["node", "vite"])
             result = attribute_project(process, [], [str(root)])
-            self.assertEqual(Path(result.path), project)
+            self.assertIsNotNone(result.path)
+            self.assertEqual(Path(result.path).resolve(), project.resolve())
             self.assertGreaterEqual(result.confidence, 90)
 
     def test_codex_ancestor_and_session_metadata(self):

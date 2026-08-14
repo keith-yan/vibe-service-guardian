@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import shutil
-import socket
 import subprocess
 import sys
 import time
@@ -12,6 +11,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 import psutil
+
+from .network import collect_connections
 
 
 class ActionError(RuntimeError):
@@ -26,20 +27,22 @@ def _process_create_time(pid: int) -> float | None:
 
 
 def _listener_snapshot() -> list[dict[str, Any]]:
+    endpoint_map, _established, errors, status = collect_connections(include_udp=True)
+    if errors and not any(endpoint_map.values()):
+        raise OSError(str(status.get("message") or errors[0]))
+
     listeners: list[dict[str, Any]] = []
-    for connection in psutil.net_connections(kind="inet"):
-        is_tcp = connection.type == socket.SOCK_STREAM and connection.status == psutil.CONN_LISTEN
-        is_udp = connection.type == socket.SOCK_DGRAM and bool(connection.laddr)
-        if not (is_tcp or is_udp) or not connection.laddr:
-            continue
-        listeners.append(
-            {
-                "protocol": "TCP" if connection.type == socket.SOCK_STREAM else "UDP",
-                "address": str(connection.laddr.ip),
-                "port": int(connection.laddr.port),
-                "pid": int(connection.pid) if connection.pid is not None else None,
-            }
-        )
+    for pid, endpoints in endpoint_map.items():
+        owner_pid = int(pid) if int(pid) > 0 else None
+        for endpoint in endpoints:
+            listeners.append(
+                {
+                    "protocol": endpoint.protocol,
+                    "address": endpoint.address,
+                    "port": endpoint.port,
+                    "pid": owner_pid,
+                }
+            )
     return listeners
 
 

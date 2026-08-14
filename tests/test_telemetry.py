@@ -1,11 +1,32 @@
-import unittest
-
 import json
+import unittest
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
+from vsg import telemetry
 from vsg.telemetry import parse_amd_smi_json, parse_nvidia_telemetry, parse_windows_gpu_counters
 
 
 class TelemetryTests(unittest.TestCase):
+    def test_cpu_frequency_is_unknown_when_psutil_omits_probe(self):
+        with patch.object(telemetry.psutil, "cpu_freq", None, create=True):
+            self.assertEqual(telemetry._cpu_frequencies_mhz(), (None, None))
+
+    def test_cpu_frequency_probe_returns_measured_values_once(self):
+        probe = Mock(return_value=SimpleNamespace(current=3199.6, max=4200.4))
+        with patch.object(telemetry.psutil, "cpu_freq", probe, create=True):
+            self.assertEqual(telemetry._cpu_frequencies_mhz(), (3200.0, 4200.0))
+        probe.assert_called_once_with()
+
+    def test_cpu_frequency_not_implemented_is_unknown(self):
+        with patch.object(
+            telemetry.psutil,
+            "cpu_freq",
+            side_effect=NotImplementedError,
+            create=True,
+        ):
+            self.assertEqual(telemetry._cpu_frequencies_mhz(), (None, None))
+
     def test_nvidia_live_parser_preserves_unsupported_sensors_as_null(self):
         sample = "0, NVIDIA RTX 4090, 73, 44, 24564, 12000, 12564, 69, N/A, 311.5, 450\n"
         item = parse_nvidia_telemetry(sample)[0]

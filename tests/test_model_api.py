@@ -45,7 +45,8 @@ class ModelApiTests(unittest.TestCase):
                     timeout=10,
                 )
                 self.assertEqual(len(estimate["estimate"]["candidates"]), status["catalog"]["model_count"])
-                self.assertIn("127.0.0.1", estimate["estimate"]["runtime_plan"]["display"])
+                self.assertIn("127.0.0.1", estimate["estimate"]["runtime_plan"]["binding"])
+                self.assertFalse(estimate["estimate"]["runtime_plan"]["will_execute"])
 
                 bad = urllib.request.Request(
                     base + "/api/model-planner/benchmark",

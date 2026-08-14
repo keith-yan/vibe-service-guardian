@@ -32,6 +32,14 @@ def verify(output_dir: Path) -> subprocess.CompletedProcess[str]:
 
 
 class RequirementLockTests(unittest.TestCase):
+    def test_text_requirements_are_forced_to_lf_on_every_platform(self):
+        rules = {
+            line.strip()
+            for line in (ROOT / ".gitattributes").read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        }
+        self.assertIn("*.txt text eol=lf", rules)
+
     def test_checked_in_lock_set_is_complete_and_fresh(self):
         result = verify(ROOT / "requirements-lock")
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)

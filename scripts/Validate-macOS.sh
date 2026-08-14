@@ -89,8 +89,11 @@ for _ in range(120):
         with urllib.request.urlopen(base + "/api/status", timeout=1) as response:
             payload = json.loads(response.read().decode("utf-8"))
         snapshot = payload.get("snapshot") or {}
-        if snapshot.get("generated_at") is None:
-            raise RuntimeError("first collector snapshot is not ready")
+        if snapshot.get("generated_at") is None or snapshot.get("schema_version") != "2.0":
+            raise RuntimeError(
+                "first collector snapshot is not ready: "
+                f"schema={snapshot.get('schema_version')}; errors={snapshot.get('errors') or []}"
+            )
         with urllib.request.urlopen(base + "/api/model-planner/status", timeout=15) as response:
             planner = json.loads(response.read().decode("utf-8"))
         estimate_request = urllib.request.Request(
@@ -120,6 +123,12 @@ for _ in range(120):
         last_error = exc
         time.sleep(0.125)
 else:
+    log_path = data_dir / "vsg.log"
+    if log_path.is_file():
+        log_tail = log_path.read_text(encoding="utf-8", errors="replace")[-12000:]
+        print("--- vsg.log tail ---", file=sys.stderr)
+        print(log_tail, file=sys.stderr)
+        print("--- end vsg.log tail ---", file=sys.stderr)
     raise SystemExit(f"status API unavailable: {last_error}")
 
 assert health["ok"] is True and health["version"], health

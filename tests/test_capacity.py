@@ -1,4 +1,5 @@
 import unittest
+from copy import deepcopy
 
 from vsg.capacity import CapacityError, estimate_capacity, memory_breakdown, validate_workload
 from vsg.model_catalog import load_catalog
@@ -61,6 +62,33 @@ class CapacityTests(unittest.TestCase):
             estimate["ceilings"]["physical"].get("total_params_b", 0),
             estimate["ceilings"]["sla"].get("total_params_b", 0),
         )
+
+    def test_unavailable_plan_keeps_complete_non_executing_contract(self):
+        constrained = deepcopy(hardware_fixture())
+        constrained["memory"] = {
+            "total_gib": 1.0,
+            "available_gib": 0.5,
+            "unified": False,
+        }
+        constrained["gpus"] = []
+        estimate = estimate_capacity(
+            constrained,
+            load_catalog(),
+            {
+                "total_users": 25,
+                "concurrency": 4,
+                "context_tokens": 8192,
+                "target_tps_per_user": 8,
+                "target_ttft_seconds": 5,
+            },
+        )
+        plan = estimate["runtime_plan"]
+        self.assertIsNone(estimate["selected_model_id"])
+        self.assertFalse(plan["available"])
+        self.assertFalse(plan["will_execute"])
+        self.assertEqual(plan["command"], [])
+        self.assertEqual(plan["display"], "")
+        self.assertEqual(plan["binding"], "127.0.0.1:8080")
 
     def test_total_users_does_not_change_memory_at_fixed_concurrency(self):
         first = estimate_capacity(hardware_fixture(), load_catalog(), {"total_users": 10, "concurrency": 2})
