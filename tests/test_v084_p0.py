@@ -1,4 +1,5 @@
 import copy
+import os
 import tempfile
 import threading
 import time
@@ -65,13 +66,35 @@ def wait_for_job(manager, job_id: str, timeout: float = 3.0) -> dict:
 
 class HistoricalLifecycleLabelTests(unittest.TestCase):
     def test_signature_is_one_way_stable_and_exact(self):
-        first = ProcessSnapshot(pid=1, exe=r"C:\Tools\python.exe", cwd=r"E:\vibe coding\demo")
-        same = ProcessSnapshot(pid=2, exe=r"c:\tools\PYTHON.EXE", cwd=r"e:\VIBE CODING\DEMO")
-        other = ProcessSnapshot(pid=3, exe=r"C:\Tools\python.exe", cwd=r"E:\vibe coding\other")
+        if os.name == "nt":
+            executable = r"C:\Tools\python.exe"
+            working_directory = r"E:\vibe coding\demo"
+            case_variant_executable = r"c:\tools\PYTHON.EXE"
+            case_variant_directory = r"e:\VIBE CODING\DEMO"
+            other_directory = r"E:\vibe coding\other"
+        else:
+            executable = "/opt/Tools/python"
+            working_directory = "/srv/Vibe Coding/demo"
+            case_variant_executable = "/opt/tools/PYTHON"
+            case_variant_directory = "/srv/vibe coding/DEMO"
+            other_directory = "/srv/Vibe Coding/other"
+
+        first = ProcessSnapshot(pid=1, exe=executable, cwd=working_directory)
+        same = ProcessSnapshot(pid=2, exe=executable, cwd=working_directory)
+        case_variant = ProcessSnapshot(
+            pid=3,
+            exe=case_variant_executable,
+            cwd=case_variant_directory,
+        )
+        other = ProcessSnapshot(pid=4, exe=executable, cwd=other_directory)
         self.assertEqual(ownership_signature(first), ownership_signature(same))
+        if os.name == "nt":
+            self.assertEqual(ownership_signature(first), ownership_signature(case_variant))
+        else:
+            self.assertNotEqual(ownership_signature(first), ownership_signature(case_variant))
         self.assertNotEqual(ownership_signature(first), ownership_signature(other))
         self.assertNotIn("python", ownership_signature(first))
-        self.assertIsNone(ownership_signature(ProcessSnapshot(pid=4, exe=None, cwd="E:\\demo")))
+        self.assertIsNone(ownership_signature(ProcessSnapshot(pid=5, exe=None, cwd=working_directory)))
 
     def test_missing_command_line_never_becomes_shared_restart_identity(self):
         self.assertEqual(redacted_command_hash(None), "")
