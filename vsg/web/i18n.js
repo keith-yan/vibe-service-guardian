@@ -4,6 +4,109 @@
   const STORAGE_KEY = "vsg.locale";
   const HAN = /[\u3400-\u9fff]/;
   const pairs = [
+    ["停止无法撤销；观察可随时中止，复活后不会自动二次停止。", "Stopping cannot be undone. Observation can be cancelled at any time, and a relaunched service is never stopped automatically."],
+    ["“固定矩阵”用于比较负载；“60 秒本机校准”只测试已加载模型的单/双并发。开始前完整预览；RAM 或 VRAM 达到 85% 后停止发起新请求，不强杀已发出的推理。", "The fixed matrix compares workloads. The 60-second local calibration tests only concurrency 1 or 2 against a loaded model. The full plan is previewed first; VSG stops issuing new requests at 85% RAM or VRAM and never force-kills in-flight inference."],
+    ["只说明权重、KV 与工作区理论上能否装下；未故意制造 OOM，不代表实验证实的物理极限。", "Indicates only whether weights, KV cache, and workspace theoretically fit. VSG does not deliberately trigger OOM, so this is not an experimentally proven physical limit."],
+    ["并发余量仅在运行时暴露当前请求数且存在当前硬件有效实测档案时计算。", "Concurrency headroom is calculated only when the runtime exposes current requests and a valid measured profile exists for the current hardware."],
+    ["当前 RAM/VRAM 已触发 85% 护栏，不建议新增并发", "The current RAM/VRAM level has triggered the 85% guard; do not add concurrency"],
+    ["基于本机实测档案", "Based on a measured local profile"],
+    ["当前同时加载多个模型，实测档案不能直接推算余量", "Multiple models are loaded; a measured profile cannot safely estimate current headroom"],
+    ["暂无当前模型和硬件均匹配的有效实测档案", "No valid measured profile matches both the current model and hardware"],
+    ["未获得系统内存占用证据，拒绝启动 60 秒本机校准", "System-memory utilization evidence is unavailable; the 60-second local calibration is blocked"],
+    ["检测到独立 GPU，但未获得 VRAM 占用证据，拒绝启动 60 秒本机校准", "A discrete GPU was detected but VRAM-utilization evidence is unavailable; the 60-second local calibration is blocked"],
+    ["通过 Docker Compose 停止服务", "Stop the service through Docker Compose"],
+    ["先在 Compose 项目目录复核服务名与依赖，再复制命令执行。", "Review the service name and dependencies in the Compose project directory before copying and running the command."],
+    ["通过 Docker Engine 停止容器", "Stop the container through Docker Engine"],
+    ["该命令只作为建议展示；请先检查重启策略。", "This command is displayed as guidance only; review the restart policy first."],
+    ["在对应 WSL 发行版中停止进程", "Stop the process inside its WSL distribution"],
+    ["请先在发行版内复核 PID 与进程身份；Windows PID 不能替代该 Linux PID。", "Verify the PID and process identity inside the distribution first; a Windows PID cannot substitute for this Linux PID."],
+    ["通过 Windows 服务管理器停止", "Stop through Windows Service Manager"],
+    ["先保存未提交工作，再从原 Agent/IDE 会话终止任务或关闭对应终端。", "Save uncommitted work, then end the task in the original Agent/IDE session or close its terminal."],
+    ["先定位 systemd 托管单元", "Identify the systemd unit first"],
+    ["运行只读状态命令确认 unit 名称，再人工执行 systemctl stop <unit>。", "Use the read-only status command to identify the unit, then manually run systemctl stop <unit>."],
+    ["先定位 launchd 标签", "Identify the launchd label first"],
+    ["运行只读命令确认 domain/label，再人工使用 launchctl bootout。", "Use the read-only command to identify the domain and label, then manually use launchctl bootout."],
+    ["通过 PM2 复核并停止应用", "Review and stop the application through PM2"],
+    ["先运行 pm2 list 确认应用名，再人工执行 pm2 stop <app-name>。", "Run pm2 list to confirm the application name, then manually run pm2 stop <app-name>."],
+    ["通过 Supervisor 复核托管任务", "Review the managed task through Supervisor"],
+    ["先查看状态确认任务名，再人工执行 supervisorctl stop <name>。", "Review status to confirm the task name, then manually run supervisorctl stop <name>."],
+    ["从原启动入口结束服务", "End the service from its original launch point"],
+    ["根据父进程证据回到原项目终端、IDE 或生命周期管理器人工停止。", "Use parent-process evidence to return to the original project terminal, IDE, or lifecycle manager and stop it manually."],
+    ["归属置信度", "Attribution confidence"],
+    ["运行请求", "Running requests"],
+    ["排队", "Queued"],
+    ["实测安全上限", "Measured safe limit"],
+    ["当前 RAM 可用", "Current RAM available"],
+    ["余量未知", "headroom unknown"],
+    ["未获得 VRAM 余量", "VRAM headroom unavailable"],
+    ["可能失效", "Possibly invalid"],
+    ["已过期", "Expired"],
+    ["实测可用上限", "Measured usable ceiling"],
+    ["推荐安全并发", "Recommended safe concurrency"],
+    ["未映射", "Not mapped"],
+    ["已生成本机实测档案", "Measured local profile created"],
+    ["复制建议命令", "Copy suggested command"],
+    ["当前没有可校准的已加载本地模型", "No loaded local model is currently eligible for calibration"],
+    ["同可执行路径 + 同工作目录的后续进程继承标签", "Future processes with the same executable path and working directory inherit the label"],
+    ["复活时显示操作系统本机通知（可选）", "Show an optional local OS notification on relaunch"],
+    ["推荐操作（只展示，不执行）", "Recommended operations (display only, never executed)"],
+    ["暂无可验证的生命周期管理器命令，请根据父进程证据回到原启动入口。", "No verified lifecycle-manager command is available. Use the parent-process evidence to return to the original launch point."],
+    ["本机实测档案", "Measured profiles on this machine"],
+    ["正在读取当前 RAM / VRAM 余量…", "Reading current RAM / VRAM headroom…"],
+    ["当前已加载模型", "Currently loaded model"],
+    ["运行 60 秒单并发校准", "Run 60-second concurrency-1 calibration"],
+    ["运行 60 秒双并发校准", "Run 60-second concurrency-2 calibration"],
+    ["尚无本机 60 秒实测档案。请到 AI 运行体检，对已加载模型运行单并发或双并发校准。", "No 60-second local profile yet. In AI Runtime Checkup, calibrate a loaded model at concurrency 1 or 2."],
+    ["项目、推理实例、实时负载与实测余量", "Projects, inference instances, live load, and measured headroom"],
+    ["暂无项目—推理实例关系", "No project-to-inference relationship"],
+    ["启动模型服务并完成项目归属后刷新。", "Start a model service, attribute it to a project, then refresh."],
+    ["历史生命周期标签", "Historical lifecycle label"],
+    ["标记为可安全清理", "Mark as safe to clean up"],
+    ["撤销当前历史生命周期标签", "Remove current historical lifecycle label"],
+    ["用户历史标记 · 可安全清理", "User history label · safe to clean up"],
+    ["用户历史标记 · 预期", "User history label · expected"],
+    ["停止后持续观察", "Post-stop observation"],
+    ["停止并观察", "Stop and observe"],
+    ["15 分钟（推荐）", "15 minutes (recommended)"],
+    ["正在持续观察停止结果", "Observing the post-stop result"],
+    ["正在中止持续观察", "Cancelling post-stop observation"],
+    ["中止观察", "Cancel observation"],
+    ["关闭报告", "Close report"],
+    ["停止验证报告：成功消失", "Stop verification report: successfully disappeared"],
+    ["停止验证报告：疑似被更高层进程拉起", "Stop verification report: likely relaunched by a higher-level process"],
+    ["停止验证报告：服务已复活", "Stop verification report: service relaunched"],
+    ["停止验证报告：证据不足", "Stop verification report: insufficient evidence"],
+    ["持续观察已由用户中止", "Observation cancelled by the user"],
+    ["持续观察因 VSG 退出而中断", "Observation interrupted because VSG exited"],
+    ["持续观察失败：证据不足", "Observation failed: insufficient evidence"],
+    ["持续观察未能启动：请人工复核", "Observation could not start: review manually"],
+    ["停止已完成，但持续观察未能启动；请立即人工复核端口", "The stop completed, but observation could not start; immediately review the port manually"],
+    ["停止动作已经发生；当前没有持续观察证据", "The stop action occurred; no continuous-observation evidence is available"],
+    ["端口已重新监听", "Port is listening again"],
+    ["端口仍关闭", "Port remains closed"],
+    ["端口状态待确认", "Port state is awaiting evidence"],
+    ["父进程已变化", "Parent process changed"],
+    ["建议命令已复制；VSG 未执行该命令", "Suggested command copied; VSG did not execute it"],
+    ["当前历史生命周期标签已撤销", "Current historical lifecycle label removed"],
+    ["负载模式", "Workload mode"],
+    ["固定三级矩阵", "Fixed three-tier matrix"],
+    ["60 秒本机校准", "60-second local calibration"],
+    ["60 秒校准窗口，最多 120 个请求；本机很快时可能提前用完请求预算，窗口到期后不再发起新请求", "A 60-second calibration window with at most 120 requests. A fast runtime may exhaust the request budget early; no new requests are issued after the window expires"],
+    ["校准并发", "Calibration concurrency"],
+    ["单并发", "Concurrency 1"],
+    ["双并发", "Concurrency 2"],
+    ["正在生成可预览计划…", "Generating previewable plan…"],
+    ["基于本机短时实测，非理论估算", "Based on a short local measurement, not a theoretical estimate"],
+    ["应用到规划", "Apply to planner"],
+    ["标记过期", "Mark expired"],
+    ["恢复有效", "Restore active"],
+    ["当前硬件有效", "Valid for current hardware"],
+    ["用户标记过期", "Marked expired by user"],
+    ["硬件变化，可能失效", "Hardware changed; possibly invalid"],
+    ["理论容量上限", "Theoretical capacity ceiling"],
+    ["本机实测档案已删除；模型和服务未受影响", "Local measured profile deleted; models and services were not affected"],
+    ["删除本机实测档案", "Delete local measured profile"],
+    ["持续观察任务", "Stop-observation jobs"],
     ["预览和导出均不包含 PID、路径、IP、命令、会话 ID、日志或模型响应。不会自动上传；导出文件仍需人工复核后再对外分享。", "Preview and export exclude PIDs, paths, IP addresses, commands, session IDs, logs, and model responses. Nothing is uploaded automatically; manually review the exported file before sharing it."],
     ["该报告是单机自报证据，不能证明独立用户数、公开仓库采用量、下载量或外部项目使用情况。", "This is self-reported evidence from one machine. It does not prove independent users, public-repository adoption, downloads, or external-project usage."],
     ["请按当前实际情况确认；“暂不确定”不会被计入明确结论。该记录只留在本机，并用于评估判断规则是否命中。", "Confirm the current real-world outcome. Not sure is excluded from decisive results. The record stays local and is used to evaluate whether the assessment rule matched."],
@@ -804,7 +907,10 @@
     observer?.disconnect();
     locale = normalizeLocale(next);
     document.documentElement.lang = locale === "en" ? "en" : "zh-CN";
-    if (persist) localStorage.setItem(STORAGE_KEY, locale);
+    if (persist) {
+      try { localStorage.setItem(STORAGE_KEY, locale); }
+      catch { /* Locale persistence is optional. */ }
+    }
     processRoot(document.documentElement);
     updateToggle();
     observe();
@@ -812,7 +918,9 @@
   }
 
   function initialLocale() {
-    const saved = localStorage.getItem(STORAGE_KEY);
+    let saved = null;
+    try { saved = localStorage.getItem(STORAGE_KEY); }
+    catch { /* Fall back to the browser locale. */ }
     return normalizeLocale(saved || navigator.languages?.[0] || navigator.language || "zh-CN");
   }
 

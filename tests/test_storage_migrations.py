@@ -168,7 +168,7 @@ class StorageMigrationTests(unittest.TestCase):
                 storage.close()
             self.assertEqual(list(data_dir.glob("history.pre-migration-*.sqlite3")), [])
 
-    def test_version_three_database_adds_impact_feedback_with_backup(self):
+    def test_version_three_database_migrates_through_current_schema_with_backup(self):
         with tempfile.TemporaryDirectory() as directory:
             data_dir = Path(directory)
             data_dir.mkdir(parents=True, exist_ok=True)
@@ -200,7 +200,11 @@ class StorageMigrationTests(unittest.TestCase):
                     "v3-fixture", "uncertain", "review", 70, "host"
                 )
                 self.assertEqual(stored["outcome"], "uncertain")
-                backups = list(data_dir.glob("history.pre-migration-v3-to-v4-*.sqlite3"))
+                backups = list(
+                    data_dir.glob(
+                        f"history.pre-migration-v3-to-v{CURRENT_SCHEMA_VERSION}-*.sqlite3"
+                    )
+                )
                 self.assertEqual(len(backups), 1)
             finally:
                 storage.close()

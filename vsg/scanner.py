@@ -51,6 +51,53 @@ INLINE_SECRET_RE = re.compile(
 )
 
 
+def _normalized_identity_path(value: str | None) -> str:
+    """Normalize an already-visible local path for a one-way ownership signature."""
+
+    if not value:
+        return ""
+    try:
+        normalized = os.path.realpath(os.path.expanduser(value))
+    except (OSError, ValueError):
+        normalized = value
+    # normcase folds case on Windows but preserves it on case-sensitive POSIX
+    # filesystems.  An unconditional casefold would merge distinct Linux paths.
+    return os.path.normcase(os.path.normpath(normalized))
+
+
+def ownership_signature(process: ProcessSnapshot) -> str | None:
+    """Return a privacy-preserving identity for historical ownership labels.
+
+    The user-defined contract is exact executable path plus exact working
+    directory.  Only the digest is persisted in an attribution rule; paths are
+    never copied into the historical-label record.
+    """
+
+    executable = _normalized_identity_path(process.exe)
+    working_directory = _normalized_identity_path(process.cwd)
+    if not executable or not working_directory:
+        return None
+    material = f"v1|{executable}|{working_directory}"
+    return hashlib.sha256(material.encode("utf-8", errors="replace")).hexdigest()
+
+
+def _lifecycle_manager(source: str, windows_services: list[str], ancestors: list[ProcessSnapshot]) -> str | None:
+    if windows_services:
+        return "Windows Service Control Manager"
+    if source == "agent":
+        return "Agent/IDE parent"
+    names = {item.name.casefold() for item in ancestors}
+    if names & {"systemd", "systemd --user"}:
+        return "systemd"
+    if names & {"launchd"}:
+        return "launchd"
+    if names & {"pm2", "pm2.exe", "pm2-runtime", "pm2-runtime.exe"}:
+        return "PM2"
+    if names & {"supervisord", "supervisorctl"}:
+        return "supervisord"
+    return None
+
+
 def _redact_inline(value: str) -> str:
     value = URI_USERINFO_RE.sub(r"\1\2:[REDACTED]@", value)
     value = QUERY_SECRET_RE.sub(r"\1[REDACTED]", value)
@@ -80,6 +127,18 @@ def redact_arguments(arguments: list[str] | tuple[str, ...] | None) -> list[str]
             continue
         result.append(_redact_inline(value))
     return result
+
+
+def redacted_command_hash(arguments: list[str] | tuple[str, ...] | None) -> str:
+    """Hash the same redacted command representation used by service records."""
+
+    command = " ".join(redact_arguments(arguments)).strip()
+    # An unavailable command line is not identity evidence. Hashing the empty
+    # string would make every access-denied process look identical and could
+    # create a false relaunch conclusion during post-stop observation.
+    if not command:
+        return ""
+    return hashlib.sha256(command.encode("utf-8", errors="replace")).hexdigest()
 
 
 class Scanner:
@@ -260,7 +319,8 @@ class Scanner:
             runtime = detect_runtime(process)
             windows_services = service_map.get(pid, [])
             source = "windows_service" if windows_services else "agent" if pid in agent_pids else "host"
-            command_hash = hashlib.sha256(process.command.encode("utf-8", errors="replace")).hexdigest()
+            command_hash = redacted_command_hash(process.cmdline)
+            historical_signature = ownership_signature(process)
             fingerprint_material = "|".join(
                 [
                     source,
@@ -312,6 +372,7 @@ class Scanner:
                 tags=tags,
                 metadata={
                     "command_hash": command_hash,
+                    "ownership_signature": historical_signature,
                     "mark_note": mark.get("note"),
                     "mark_present": bool(mark),
                     "stoppable_candidate": source == "host" and runtime in STOPPABLE_RUNTIMES and not protected,
@@ -319,7 +380,7 @@ class Scanner:
                     "agent_process": source == "agent",
                     "model_runtime": runtime in MODEL_SERVER_RUNTIMES,
                     "auto_restart": None,
-                    "lifecycle_manager": "Windows Service Control Manager" if windows_services else "Agent/IDE parent" if source == "agent" else None,
+                    "lifecycle_manager": _lifecycle_manager(source, windows_services, ancestors),
                 },
             )
             services.append(service)
@@ -366,6 +427,12 @@ class Scanner:
             }
         services.extend(wsl_services)
         collectors["wsl"] = wsl_status
+
+        # Container/WSL collectors use the same public record shape.  Add a
+        # signature when both path components are visible, but never weaken
+        # their independent lifecycle protections.
+        for service in services:
+            service.metadata.setdefault("ownership_signature", ownership_signature(service.process))
 
         rules = self.storage.attribution_rules(enabled_only=True) if self.storage else []
         current_marks = self.storage.marks() if self.storage else {}

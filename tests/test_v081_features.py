@@ -158,7 +158,7 @@ class WorkloadAndCalibrationTests(unittest.TestCase):
         snapshot["telemetry"]["gpus"][0]["memory_util_percent"] = 96
         guard = resource_guard(snapshot, 20)
         self.assertFalse(guard["allowed"])
-        self.assertTrue(any("95%" in item for item in guard["blockers"]))
+        self.assertTrue(any("85%" in item for item in guard["blockers"]))
 
     def test_preview_is_fixed_bounded_and_explicit(self):
         target = service_fixture()

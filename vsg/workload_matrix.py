@@ -8,7 +8,11 @@ import time
 from typing import Any, Callable
 
 from .diagnostics import redact_text
-from .service_benchmark import MAX_CONTEXT_TOKENS, run_service_benchmark
+from .service_benchmark import (
+    MAX_CALIBRATION_REQUESTS,
+    MAX_CONTEXT_TOKENS,
+    run_service_benchmark,
+)
 from .storage import Storage
 
 
@@ -32,7 +36,12 @@ class WorkloadMatrixError(ValueError):
     pass
 
 
-def resource_guard(snapshot: dict[str, Any], low_disk_free_gib: float) -> dict[str, Any]:
+def resource_guard(
+    snapshot: dict[str, Any],
+    low_disk_free_gib: float,
+    *,
+    require_memory_evidence: bool = False,
+) -> dict[str, Any]:
     telemetry = snapshot.get("telemetry") or {}
     blockers: list[str] = []
     evidence: list[str] = []
@@ -41,18 +50,28 @@ def resource_guard(snapshot: dict[str, Any], low_disk_free_gib: float) -> dict[s
         evidence.append(f"RAM {float(memory_percent):.1f}%")
         if float(memory_percent) >= 85:
             blockers.append("系统内存使用率已达到 85%，拒绝启动新的基准负载")
-    for gpu in telemetry.get("gpus") or []:
+    elif require_memory_evidence:
+        blockers.append("未获得系统内存占用证据，拒绝启动 60 秒本机校准")
+    gpu_items = telemetry.get("gpus") or []
+    measured_gpu_memory = False
+    discrete_gpu_reported = False
+    for gpu in gpu_items:
         name = str(gpu.get("name") or "GPU")
         memory_util = gpu.get("memory_util_percent")
         temperature = gpu.get("temperature_c")
+        if gpu.get("memory_total_gib") is not None and not gpu.get("unified_memory"):
+            discrete_gpu_reported = True
         if memory_util is not None:
+            measured_gpu_memory = True
             evidence.append(f"{name} VRAM {float(memory_util):.1f}%")
-            if float(memory_util) >= 95:
-                blockers.append(f"{name} 显存占用已达到 95%，拒绝启动新的基准负载")
+            if float(memory_util) >= 85:
+                blockers.append(f"{name} 显存占用已达到 85%，拒绝启动新的基准负载")
         if temperature is not None:
             evidence.append(f"{name} {float(temperature):.1f}°C")
             if float(temperature) >= 88:
                 blockers.append(f"{name} 温度已达到 88°C，拒绝启动新的基准负载")
+    if require_memory_evidence and discrete_gpu_reported and not measured_gpu_memory:
+        blockers.append("检测到独立 GPU，但未获得 VRAM 占用证据，拒绝启动 60 秒本机校准")
     for sensor in (telemetry.get("sensors") or {}).get("temperatures") or []:
         current = sensor.get("current_c")
         if current is not None and float(current) >= 90:
@@ -72,7 +91,7 @@ def resource_guard(snapshot: dict[str, Any], low_disk_free_gib: float) -> dict[s
         "evidence": evidence[:20],
         "thresholds": {
             "memory_used_percent": 85,
-            "gpu_memory_used_percent": 95,
+            "gpu_memory_used_percent": 85,
             "gpu_temperature_c": 88,
             "system_temperature_c": 90,
             "disk_free_gib": float(low_disk_free_gib),
@@ -160,6 +179,15 @@ def _error_percent(actual: Any, predicted: Any) -> dict[str, float] | None:
     }
 
 
+def _hardware_vram_total_gib(hardware: dict[str, Any]) -> float | None:
+    values = [
+        float(item["memory_total_gib"])
+        for item in hardware.get("gpus") or []
+        if item.get("memory_total_gib") is not None
+    ]
+    return round(sum(values), 2) if values else None
+
+
 class WorkloadMatrixManager:
     def __init__(
         self,
@@ -237,6 +265,10 @@ class WorkloadMatrixManager:
         *,
         catalog_model_id: str | None,
         quantization: str | None,
+        mode: str = "matrix",
+        model_name: str | None = None,
+        concurrency: int | None = None,
+        duration_seconds: int | None = None,
     ) -> dict[str, Any]:
         if probe.get("health") != "ready":
             raise WorkloadMatrixError("模型服务尚未就绪，不能生成主动负载计划")
@@ -252,15 +284,45 @@ class WorkloadMatrixManager:
         reported_context = int(capacity.get("context_tokens") or configuration.get("context_tokens") or MAX_CONTEXT_TOKENS)
         context_cap = max(128, min(MAX_CONTEXT_TOKENS, reported_context))
         models = probe.get("models") or []
-        model_name = str(models[0].get("name") or "") if models and isinstance(models[0], dict) else ""
-        if not model_name:
-            raise WorkloadMatrixError("运行时未报告已加载模型，无法锁定负载目标")
-
-        fixed_steps = [
-            ("baseline", "单请求基线", 1, min(512, context_cap), 32, 5),
-            ("interactive", "双并发交互", 2, min(1024, context_cap), 32, 10),
-            ("concurrency", "四并发持续", 4, min(2048, context_cap), 64, 20),
+        known_models = [
+            str(item.get("name") or "")
+            for item in models
+            if isinstance(item, dict) and item.get("name")
         ]
+        selected_model = str(model_name or "").strip() or (known_models[0] if known_models else "")
+        if not selected_model:
+            raise WorkloadMatrixError("运行时未报告已加载模型，无法锁定负载目标")
+        if known_models and selected_model not in set(known_models):
+            raise WorkloadMatrixError("校准目标不在运行时报告的已加载模型清单中")
+
+        if mode not in {"matrix", "calibration"}:
+            raise WorkloadMatrixError("负载模式无效")
+        calibration_mode = mode == "calibration"
+        if calibration_mode:
+            selected_concurrency = int(concurrency or 1)
+            selected_duration = int(duration_seconds or 60)
+            if selected_concurrency not in {1, 2}:
+                raise WorkloadMatrixError("60 秒校准只允许单并发或双并发")
+            if selected_duration != 60:
+                raise WorkloadMatrixError("首版本机校准时长固定为 60 秒")
+            fixed_steps = [
+                (
+                    f"calibration-c{selected_concurrency}",
+                    f"{selected_concurrency} 并发 · 60 秒本机校准",
+                    selected_concurrency,
+                    min(1024, context_cap),
+                    32,
+                    MAX_CALIBRATION_REQUESTS,
+                )
+            ]
+        else:
+            selected_concurrency = 4
+            selected_duration = None
+            fixed_steps = [
+                ("baseline", "单请求基线", 1, min(512, context_cap), 32, 5),
+                ("interactive", "双并发交互", 2, min(1024, context_cap), 32, 10),
+                ("concurrency", "四并发持续", 4, min(2048, context_cap), 64, 20),
+            ]
         steps: list[dict[str, Any]] = []
         prediction_limitations: list[str] = []
         for step_id, label, concurrency, context_tokens, output_tokens, request_count in fixed_steps:
@@ -289,15 +351,20 @@ class WorkloadMatrixManager:
                     "output_tokens": output_tokens,
                     "request_count": request_count,
                     "waves": (request_count + concurrency - 1) // concurrency,
+                    "duration_seconds": selected_duration if calibration_mode else None,
                     "prediction": prediction,
                 }
             )
         snapshot = self.snapshot_provider()
-        guard = resource_guard(snapshot, self.low_disk_provider())
+        guard = resource_guard(
+            snapshot,
+            self.low_disk_provider(),
+            require_memory_evidence=calibration_mode,
+        )
         plan_id = secrets.token_urlsafe(16)
         created_at = time.time()
         plan = {
-            "schema_version": "1.0",
+            "schema_version": "1.1",
             "plan_id": plan_id,
             "created_at": created_at,
             "expires_at": created_at + 300,
@@ -307,22 +374,25 @@ class WorkloadMatrixManager:
             "process_create_time": (service.get("process") or {}).get("create_time"),
             "runtime": service.get("runtime"),
             "port": port,
-            "model_name": model_name,
+            "model_name": selected_model,
+            "mode": mode,
             "catalog_model_id": catalog_model_id,
             "quantization": quantization,
             "capacity_calibration": bool(catalog_model_id and quantization),
             "prediction_limitations": prediction_limitations,
             "steps": steps,
             "total_requests": sum(int(item[5]) for item in fixed_steps),
-            "maximum_concurrency": 4,
+            "maximum_concurrency": selected_concurrency if calibration_mode else 4,
             "guard": guard,
-            "confirmation": f"BENCHMARK PLAN {port}",
+            "confirmation": f"BENCHMARK {port}" if calibration_mode else f"BENCHMARK PLAN {port}",
             "fixed_policy": {
                 "automatic_expansion": False,
                 "deliberate_oom": False,
                 "one_active_plan": True,
                 "cancel_between_waves": True,
                 "inflight_request_may_finish": True,
+                "duration_seconds": selected_duration,
+                "resource_utilization_stop_percent": 85,
             },
         }
         with self._lock:
@@ -352,7 +422,12 @@ class WorkloadMatrixManager:
                 raise WorkloadMatrixError("服务身份或运行时探测结果已经变化，请重新预览")
             if current.get("fingerprint") != plan.get("service_fingerprint"):
                 raise WorkloadMatrixError("服务指纹已经变化，请重新预览")
-            guard = resource_guard(snapshot, self.low_disk_provider())
+            calibration_mode = plan.get("mode") == "calibration"
+            guard = resource_guard(
+                snapshot,
+                self.low_disk_provider(),
+                require_memory_evidence=calibration_mode,
+            )
             if not guard["allowed"]:
                 raise WorkloadMatrixError("；".join(guard["blockers"]))
             job_id = secrets.token_urlsafe(16)
@@ -368,6 +443,7 @@ class WorkloadMatrixManager:
                 "service_fingerprint": plan.get("service_fingerprint"),
                 "port": plan.get("port"),
                 "model_name": plan.get("model_name"),
+                "mode": plan.get("mode") or "matrix",
                 "catalog_model_id": plan.get("catalog_model_id"),
                 "quantization": plan.get("quantization"),
                 "step_count": len(plan.get("steps") or []),
@@ -413,6 +489,19 @@ class WorkloadMatrixManager:
             job["current_step"]["completed_requests"] = completed
             job["current_step"]["request_count"] = total
 
+    def _resource_progress(
+        self,
+        job_id: str,
+        samples: list[dict[str, Any]],
+        guard: dict[str, Any],
+    ) -> None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job or not isinstance(job.get("current_step"), dict):
+                return
+            job["current_step"]["resource_samples"] = samples[-180:]
+            job["current_step"]["resource_guard"] = guard
+
     def _run(self, job_id: str, plan: dict[str, Any], cancel_event: threading.Event) -> None:
         self._update(job_id, status="running", started_at=time.time())
         self._safe_audit(
@@ -435,7 +524,12 @@ class WorkloadMatrixManager:
                     terminal_status = "identity_changed"
                     terminal_error = "服务 PID、指纹或运行时探测身份已经变化，剩余步骤未执行"
                     break
-                guard = resource_guard(snapshot, self.low_disk_provider())
+                calibration_mode = plan.get("mode") == "calibration"
+                guard = resource_guard(
+                    snapshot,
+                    self.low_disk_provider(),
+                    require_memory_evidence=calibration_mode,
+                )
                 if not guard["allowed"]:
                     terminal_status = "guard_stopped"
                     terminal_error = "；".join(guard["blockers"])
@@ -450,18 +544,46 @@ class WorkloadMatrixManager:
                 self._update(job_id, current_step=current_step)
                 samples: list[dict[str, Any]] = []
                 sampler_stop = threading.Event()
+                guard_triggered: dict[str, Any] = {"triggered": False, "blockers": []}
 
                 def sample(
-                    target_samples: list[dict[str, Any]], stop_event: threading.Event
+                    target_samples: list[dict[str, Any]],
+                    stop_event: threading.Event,
+                    guard_state: dict[str, Any],
+                    memory_evidence_required: bool,
                 ) -> None:
                     while not stop_event.is_set():
-                        target_samples.append(_resource_sample(self.snapshot_provider()))
+                        current_snapshot = self.snapshot_provider()
+                        target_samples.append(_resource_sample(current_snapshot))
+                        current_guard = resource_guard(
+                            current_snapshot,
+                            self.low_disk_provider(),
+                            require_memory_evidence=memory_evidence_required,
+                        )
+                        self._resource_progress(
+                            job_id, target_samples, current_guard
+                        )
+                        if not current_guard["allowed"]:
+                            guard_state["triggered"] = True
+                            guard_state["blockers"] = current_guard["blockers"]
+                            cancel_event.set()
+                            break
                         stop_event.wait(0.35)
-                    target_samples.append(_resource_sample(self.snapshot_provider()))
+                    final_snapshot = self.snapshot_provider()
+                    target_samples.append(_resource_sample(final_snapshot))
+                    self._resource_progress(
+                        job_id,
+                        target_samples,
+                        resource_guard(
+                            final_snapshot,
+                            self.low_disk_provider(),
+                            require_memory_evidence=memory_evidence_required,
+                        ),
+                    )
 
                 sampler = threading.Thread(
                     target=sample,
-                    args=(samples, sampler_stop),
+                    args=(samples, sampler_stop, guard_triggered, calibration_mode),
                     name="vsg-workload-sampler",
                     daemon=True,
                 )
@@ -481,6 +603,11 @@ class WorkloadMatrixManager:
                         request_count=int(step.get("request_count") or step.get("concurrency") or 1),
                         cancel_event=cancel_event,
                         progress_callback=lambda completed, total: self._progress(job_id, completed, total),
+                        duration_seconds=(
+                            int(step["duration_seconds"])
+                            if step.get("duration_seconds") is not None
+                            else None
+                        ),
                     )
                 finally:
                     sampler_stop.set()
@@ -489,11 +616,11 @@ class WorkloadMatrixManager:
                 per_user_prediction = (prediction.get("per_user_generation_tps") or {}).get("expected")
                 aggregate_prediction = prediction.get("aggregate_generation_tps")
                 ttft_prediction = (prediction.get("ttft_seconds") or {}).get("expected")
+                hardware: dict[str, Any] = {}
                 hardware_fingerprint = None
                 try:
-                    hardware_fingerprint = self.hardware_provider().get(
-                        "hardware_fingerprint"
-                    )
+                    hardware = self.hardware_provider()
+                    hardware_fingerprint = hardware.get("hardware_fingerprint")
                 except Exception:
                     LOGGER.warning(
                         "workload matrix hardware fingerprint unavailable",
@@ -523,14 +650,91 @@ class WorkloadMatrixManager:
                     "prediction": prediction or None,
                     "prediction_error": result.get("prediction_error"),
                     "resource_peaks": result.get("resource_peaks"),
+                    "mode": plan.get("mode"),
+                    "project": {
+                        "name": (service.get("project") or {}).get("name"),
+                        "confidence": (service.get("project") or {}).get("confidence"),
+                    },
                 }
                 result["id"] = self.storage.add_service_benchmark(result)
+                if plan.get("mode") == "calibration":
+                    peaks = result.get("resource_peaks") or {}
+                    peak_ram = peaks.get("peak_ram_used_percent")
+                    peak_vram = peaks.get("peak_vram_used_percent")
+                    within_guard = not result.get("oom_observed") and all(
+                        value is None or float(value) < 85
+                        for value in (peak_ram, peak_vram)
+                    )
+                    measured_safe = bool(
+                        within_guard
+                        and not result.get("cancelled")
+                        and int(result.get("successful_requests") or 0) > 0
+                    )
+                    profile_id = secrets.token_urlsafe(16)
+                    profile = {
+                        "schema_version": "1.0",
+                        "profile_id": profile_id,
+                        "created_at": time.time(),
+                        "updated_at": time.time(),
+                        "status": "active",
+                        "source": "measured_local",
+                        "hardware_fingerprint": str(hardware_fingerprint or ""),
+                        "vram_total_gib": _hardware_vram_total_gib(hardware),
+                        "service_fingerprint": str(plan.get("service_fingerprint") or ""),
+                        "service_id": plan.get("service_id"),
+                        "project_name": (service.get("project") or {}).get("name"),
+                        "runtime": plan.get("runtime"),
+                        "port": int(plan.get("port") or 0),
+                        "model_name": plan.get("model_name"),
+                        "catalog_model_id": plan.get("catalog_model_id"),
+                        "quantization": plan.get("quantization"),
+                        "concurrency": int(step.get("concurrency") or 1),
+                        "duration_seconds": int(step.get("duration_seconds") or 60),
+                        "context_tokens": int(step.get("context_tokens") or 0),
+                        "output_tokens": int(step.get("output_tokens") or 0),
+                        "measured_safe": measured_safe,
+                        "recommended_safe_concurrency": (
+                            int(step.get("concurrency") or 1) if measured_safe else 0
+                        ),
+                        "measurement": {
+                            "ttft_seconds": result.get("ttft_seconds"),
+                            "ttft_p95_seconds": result.get("ttft_p95_seconds"),
+                            "generation_tps": result.get("generation_tps"),
+                            "aggregate_generation_tps": result.get(
+                                "aggregate_generation_tps"
+                            ),
+                            "successful_requests": result.get("successful_requests"),
+                            "failed_requests": result.get("failed_requests"),
+                            "wall_seconds": result.get("wall_seconds"),
+                            "resource_peaks": peaks,
+                            "oom_observed": result.get("oom_observed"),
+                        },
+                        "theoretical_capacity": step.get("prediction"),
+                        "evidence_label": "基于本机短时实测，非理论估算",
+                        "limitations": [
+                            "60 秒短时负载不能证明长时间稳定性",
+                            "达到 85% 资源阈值后只停止发起新请求，不强杀在途推理",
+                            "未故意制造 OOM，因此理论容量上限不是实验证实的物理极限",
+                        ],
+                    }
+                    self.storage.add_calibration_profile(profile)
+                    result["calibration_profile"] = {
+                        "profile_id": profile_id,
+                        "measured_safe": measured_safe,
+                        "recommended_safe_concurrency": profile[
+                            "recommended_safe_concurrency"
+                        ],
+                    }
                 public_result = {key: value for key, value in result.items() if key != "details"}
                 with self._lock:
                     job = self._jobs[job_id]
                     job["results"].append(public_result)
                     job["completed_steps"] = len(job["results"])
                     job["current_step"] = {**current_step, "status": "completed"}
+                if guard_triggered["triggered"]:
+                    terminal_status = "guard_stopped"
+                    terminal_error = "；".join(guard_triggered["blockers"])
+                    break
                 if result.get("cancelled") or cancel_event.is_set():
                     terminal_status = "cancelled"
                     break

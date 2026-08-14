@@ -18,6 +18,7 @@ MAX_CONCURRENCY = 4
 MAX_CONTEXT_TOKENS = 4096
 MAX_OUTPUT_TOKENS = 64
 MAX_MATRIX_REQUESTS = 20
+MAX_CALIBRATION_REQUESTS = 120
 
 
 class ServiceBenchmarkError(RuntimeError):
@@ -151,13 +152,16 @@ def _one_request(
     output_tokens: int,
     request_index: int,
     start_barrier: threading.Barrier,
+    request_timeout: float = 120,
 ) -> dict[str, Any]:
     prompt = _prompt(context_tokens, request_index)
     path, payload = _request_payload(runtime, model, prompt, context_tokens, output_tokens)
     encoded = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     start_barrier.wait(timeout=10)
     started = time.perf_counter()
-    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=120)
+    connection = http.client.HTTPConnection(
+        "127.0.0.1", port, timeout=max(5.0, min(float(request_timeout), 120.0))
+    )
     try:
         connection.request(
             "POST",
@@ -215,6 +219,7 @@ def run_service_benchmark(
     request_count: int | None = None,
     cancel_event: threading.Event | None = None,
     progress_callback: Callable[[int, int], None] | None = None,
+    duration_seconds: int | None = None,
 ) -> dict[str, Any]:
     port = int(probe.get("port") or 0)
     runtime = str(service.get("runtime") or "")
@@ -240,10 +245,21 @@ def run_service_benchmark(
         raise ServiceBenchmarkError(f"首版上下文测试只允许 128 到 {MAX_CONTEXT_TOKENS} tokens")
     if not 1 <= output_tokens <= MAX_OUTPUT_TOKENS:
         raise ServiceBenchmarkError(f"首版输出只允许 1 到 {MAX_OUTPUT_TOKENS} tokens")
-    total_requests = concurrency if request_count is None else int(request_count)
-    if total_requests < concurrency or total_requests > MAX_MATRIX_REQUESTS:
+    if duration_seconds is not None:
+        try:
+            duration_target = int(duration_seconds)
+        except (TypeError, ValueError) as exc:
+            raise ServiceBenchmarkError("校准时长必须是整数秒") from exc
+        if not 10 <= duration_target <= 60:
+            raise ServiceBenchmarkError("校准时长只允许 10 到 60 秒")
+        total_requests = MAX_CALIBRATION_REQUESTS
+    else:
+        duration_target = None
+        total_requests = concurrency if request_count is None else int(request_count)
+    request_limit = MAX_CALIBRATION_REQUESTS if duration_target is not None else MAX_MATRIX_REQUESTS
+    if total_requests < concurrency or total_requests > request_limit:
         raise ServiceBenchmarkError(
-            f"请求样本数必须介于并发数和 {MAX_MATRIX_REQUESTS} 之间"
+            f"请求样本数必须介于并发数和 {request_limit} 之间"
         )
     if str(body.get("confirmation") or "").strip() != f"BENCHMARK {port}":
         raise ServiceBenchmarkError(f"确认短语必须是 BENCHMARK {port}")
@@ -275,6 +291,8 @@ def run_service_benchmark(
     while launched < total_requests:
         if cancel_event is not None and cancel_event.is_set():
             break
+        if duration_target is not None and time.perf_counter() - started >= duration_target:
+            break
         wave_size = min(concurrency, total_requests - launched)
         barrier = threading.Barrier(wave_size)
         with ThreadPoolExecutor(max_workers=wave_size, thread_name_prefix="vsg-benchmark") as pool:
@@ -288,6 +306,7 @@ def run_service_benchmark(
                     output_tokens,
                     launched + index + 1,
                     barrier,
+                    30 if duration_target is not None else 120,
                 )
                 for index in range(wave_size)
             ]
@@ -324,7 +343,8 @@ def run_service_benchmark(
         "port": port,
         "model_name": model,
         "concurrency": concurrency,
-        "request_count": total_requests,
+        "request_count": len(results) + len(errors) if duration_target is not None else total_requests,
+        "request_limit": total_requests if duration_target is not None else None,
         "completed_requests": len(results) + len(errors),
         "requested_context_tokens": context_tokens,
         "requested_output_tokens": output_tokens,
@@ -345,6 +365,8 @@ def run_service_benchmark(
         "aggregate_generation_tps": round(aggregate_tps, 3) if aggregate_tps is not None else None,
         "prompt_tps": round(statistics.fmean(prompt_tps), 3) if prompt_tps else None,
         "wall_seconds": round(wall, 3),
+        "duration_target_seconds": duration_target,
+        "duration_limited": duration_target is not None,
         "oom_observed": any("out of memory" in error.lower() or "oom" in error.lower() for error in errors),
         "errors": errors[:8],
         "details": {
@@ -355,6 +377,8 @@ def run_service_benchmark(
                 "max_context_tokens": MAX_CONTEXT_TOKENS,
                 "max_output_tokens": MAX_OUTPUT_TOKENS,
                 "max_matrix_requests": MAX_MATRIX_REQUESTS,
+                "max_calibration_requests": MAX_CALIBRATION_REQUESTS,
+                "max_calibration_seconds": 60,
             },
             "p95_policy": "P95 is labelled statistically insufficient until at least 20 successful samples exist",
             "cancellation_policy": "cooperative between waves; in-flight local requests may finish",

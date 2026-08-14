@@ -78,7 +78,8 @@ mkdir -p "$PORTABLE_ROOT/docs" "$PORTABLE_ROOT/docs/case-studies" "$PORTABLE_ROO
 cp docs/AGENT-SUPPORT.md docs/ARCHITECTURE.md docs/MODEL-CAPACITY.md \
   docs/V0.8-FEATURES.md docs/V0.8.1-FEATURES.md docs/V0.8.2-HARDENING.md \
   docs/PRODUCTION-READINESS-0.8.2.md docs/V0.8.3-CONVERGENCE.md \
-  docs/PRODUCTION-READINESS-0.8.3.md docs/VALIDATION.md docs/EVIDENCE-REGISTER.md \
+  docs/PRODUCTION-READINESS-0.8.3.md docs/V0.8.4-P0-CLOSURE.md \
+  docs/PRODUCTION-READINESS-0.8.4.md docs/VALIDATION.md docs/EVIDENCE-REGISTER.md \
   "$PORTABLE_ROOT/docs/"
 cp docs/case-studies/README.md docs/case-studies/maintainer-validation.md \
   "$PORTABLE_ROOT/docs/case-studies/"

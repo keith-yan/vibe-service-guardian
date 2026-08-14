@@ -138,6 +138,30 @@ class WebAssetTests(unittest.TestCase):
         self.assertIn("plan.confirmation", script)
         self.assertIn("prediction_error", script)
 
+    def test_v084_observation_profiles_and_project_runtime_assets_are_present(self):
+        html = resources.files("vsg").joinpath("web", "index.html").read_text(encoding="utf-8")
+        script = resources.files("vsg").joinpath("web", "app.js").read_text(encoding="utf-8")
+        i18n = resources.files("vsg").joinpath("web", "i18n.js").read_text(encoding="utf-8")
+        for element_id in (
+            "stop-observation-bar",
+            "stop-observation-minutes",
+            "attribution-lifecycle-label",
+            "attribution-inherit",
+            "measured-profile-list",
+            "planner-calibration-service",
+            "project-runtime-body",
+        ):
+            self.assertIn(f'id="{element_id}"', html)
+        for endpoint in (
+            "/api/stop-observations",
+            "/api/calibration-profiles/status",
+            "/api/calibration-profiles/delete",
+            "/api/service/lifecycle-label/clear",
+        ):
+            self.assertIn(endpoint, script)
+        self.assertIn("Port state is awaiting evidence", i18n)
+        self.assertIn("Multiple models are loaded", i18n)
+
     def test_local_impact_evidence_requires_explicit_export(self):
         html = resources.files("vsg").joinpath("web", "index.html").read_text(encoding="utf-8")
         script = resources.files("vsg").joinpath("web", "app.js").read_text(encoding="utf-8")
