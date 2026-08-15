@@ -389,9 +389,12 @@ def attribute_agent(
     }:
         evidence.append("该产品未提供已核验的稳定本地会话标识接口，仅确认进程归属")
 
+    resolved_kind = "managed_child" if index > 0 and kind in {"agent", "ide"} else kind
+    if resolved_kind == "managed_child":
+        evidence.append("服务继承 Agent/IDE 父进程归属；不按普通宿主机服务直接停止")
     return AgentAttribution(
         provider=provider,
-        kind=kind,
+        kind=resolved_kind,
         session_id=session_id,
         confidence=max(1, min(confidence, 100)),
         active=True,

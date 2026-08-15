@@ -4,6 +4,36 @@ from unittest.mock import patch
 from vsg.containers import _model_runtime, _parse_wsl_line, scan_docker
 
 
+def _docker_inspect_line(
+    container_id,
+    *,
+    pid=0,
+    restarting=False,
+    restart_count=0,
+    restart_policy="no",
+    project=None,
+    service=None,
+    working_dir=None,
+    config_files=None,
+):
+    import json
+
+    return "\t".join(
+        json.dumps(value)
+        for value in (
+            container_id,
+            pid,
+            restarting,
+            restart_count,
+            restart_policy,
+            project,
+            service,
+            working_dir,
+            config_files,
+        )
+    )
+
+
 class ContainerTests(unittest.TestCase):
     def test_container_and_wsl_model_runtime_signatures(self):
         self.assertEqual(_model_runtime("ghcr.io/ollama/ollama:latest"), "Ollama")
@@ -68,16 +98,15 @@ class ContainerTests(unittest.TestCase):
             '"Names":"model-api","Ports":"127.0.0.1:11434->11434/tcp",'
             '"State":"running","Status":"Up 2 hours"}\n'
         )
-        inspect_output = (
-            '[{"Id":"'
-            + container_id
-            + '","Config":{"Labels":{'
-            '"com.docker.compose.project":"local_ai",'
-            '"com.docker.compose.service":"ollama",'
-            '"com.docker.compose.project.working_dir":"E:\\\\vibe coding\\\\model-stack",'
-            '"com.docker.compose.project.config_files":"E:\\\\vibe coding\\\\model-stack\\\\compose.yml"}},'
-            '"HostConfig":{"RestartPolicy":{"Name":"unless-stopped"}},'
-            '"State":{"Pid":9876,"Restarting":false},"RestartCount":2}]'
+        inspect_output = _docker_inspect_line(
+            container_id,
+            pid=9876,
+            restart_count=2,
+            restart_policy="unless-stopped",
+            project="local_ai",
+            service="ollama",
+            working_dir=r"E:\vibe coding\model-stack",
+            config_files=r"E:\vibe coding\model-stack\compose.yml",
         )
         with (
             patch("vsg.containers.shutil.which", return_value="docker"),
@@ -116,13 +145,10 @@ class ContainerTests(unittest.TestCase):
             '"Names":"db","Ports":"0.0.0.0:5432->5432/tcp",'
             '"State":"running","Status":"Up"}\n'
         )
-        inspect_output = (
-            '[{"Id":"'
-            + container_id
-            + '","Config":{"Labels":{'
-            '"com.docker.compose.project":"bad\\nname",'
-            '"com.docker.compose.project.working_dir":"..\\\\relative"}},'
-            '"HostConfig":{"RestartPolicy":{"Name":"no"}},"State":{}}]'
+        inspect_output = _docker_inspect_line(
+            container_id,
+            project="bad\nname",
+            working_dir=r"..\relative",
         )
         with (
             patch("vsg.containers.shutil.which", return_value="docker"),

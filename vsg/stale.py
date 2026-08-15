@@ -32,7 +32,9 @@ OPENABLE_RUNTIMES = STOPPABLE_RUNTIMES | {"LM Studio"}
 def _duplicate_keys(services: Iterable[ServiceRecord]) -> Counter[tuple[str, str, str]]:
     keys: list[tuple[str, str, str]] = []
     for service in services:
-        if service.source not in {"host", "windows_service"}:
+        if service.source not in {"host", "windows_service"} or service.metadata.get(
+            "agent_managed_child"
+        ):
             continue
         project = (service.project.path or "").lower()
         command_head = " ".join(service.process.cmdline[:2]).lower()
@@ -63,6 +65,13 @@ def assess_service(
             score=0,
             level="not_scored",
             reasons=["Agent 本体只展示运行状态和项目/会话证据，不按开发服务规则判定遗留"],
+            scored=False,
+        )
+    if service.metadata.get("agent_managed_child"):
+        return RiskAssessment(
+            score=0,
+            level="not_scored",
+            reasons=["该进程由可见的 Agent/IDE 父进程拉起，继承其归属并保持停止保护"],
             scored=False,
         )
     if service.windows_services:

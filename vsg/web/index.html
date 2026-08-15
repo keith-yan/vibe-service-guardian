@@ -381,7 +381,12 @@
 
         <section class="health-section operations-two-column">
           <article class="health-panel"><div class="panel-title"><span class="card-kicker">NETWORK TOPOLOGY</span><strong>监听与当前远端连接</strong></div><div id="network-topology-list" class="telemetry-list"></div></article>
-          <article class="health-panel"><div class="panel-title"><span class="card-kicker">ATTRIBUTION RULES</span><strong>用户纠正规则</strong></div><div id="attribution-rule-list" class="rule-list"></div></article>
+          <article class="health-panel attribution-rules-panel">
+            <div class="panel-title"><span class="card-kicker">ATTRIBUTION RULES</span><strong>用户纠正规则</strong></div>
+            <div id="attribution-rule-metrics" class="confidence-note">按服务生命周期统计近 30 天纠正率。</div>
+            <div class="rule-toolbar"><input id="attribution-rule-search" type="search" placeholder="搜索规则、项目、Agent 或备注"><button class="button button-small" id="attribution-rule-export" type="button">导出规则包</button><button class="button button-small" id="attribution-rule-import" type="button">导入并预览</button></div>
+            <div id="attribution-rule-list" class="rule-list"></div>
+          </article>
         </section>
 
         <section class="health-section">
@@ -441,12 +446,56 @@
         <label class="field"><span>项目名称</span><input id="attribution-project-name" maxlength="160"></label>
         <label class="field"><span>项目绝对路径</span><input id="attribution-project-path" maxlength="1024" placeholder="必须位于设置中的项目根目录"></label>
         <label class="field"><span>历史生命周期标签</span><select id="attribution-lifecycle-label"><option value="">不设置</option><option value="expected">标记为预期服务</option><option value="safe_cleanup">标记为可安全清理</option></select></label>
-        <label class="check-field"><input id="attribution-inherit" type="checkbox" checked><span>同可执行路径 + 同工作目录的后续进程继承标签</span></label>
+        <label class="field"><span>规则复用范围</span><select id="attribution-reuse-scope"><option value="instance">仅当前实例（指纹）</option><option value="standard" selected>同可执行路径 + 同工作目录</option><option value="strict">同路径、目录 + 脱敏命令哈希</option></select></label>
+        <label class="field field-full"><span>本机备注</span><textarea id="attribution-note" rows="2" maxlength="300" placeholder="记录这次纠正的依据；只保存在本机"></textarea></label>
+        <label class="check-field" hidden><input id="attribution-inherit" type="checkbox"><span>兼容旧版历史标签继承</span></label>
         <label class="check-field"><input id="attribution-expected" type="checkbox"><span>这是预期服务</span></label>
         <label class="check-field"><input id="attribution-protected" type="checkbox"><span>保护，禁止从控制台停止</span></label>
         <button class="button field-full" id="attribution-clear-label" type="button" hidden>撤销当前历史生命周期标签</button>
       </div>
       <footer><button class="button" value="cancel" type="button" id="attribution-cancel">取消</button><button class="button button-primary" type="submit">保存本机纠正规则</button></footer>
+    </form>
+  </dialog>
+
+  <dialog id="rule-editor-dialog" class="modal modal-wide">
+    <form method="dialog" class="modal-frame" id="rule-editor-form">
+      <header><div><span class="modal-kicker">AUDITABLE LOCAL RULE</span><h2 id="rule-editor-title">编辑归属规则</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="关闭">×</button></header>
+      <div class="modal-content settings-grid">
+        <div class="warning-box field-full" id="rule-editor-evidence">匹配证据保持脱敏；保存会生成一个新版本。</div>
+        <label class="field"><span>规则名称</span><input id="rule-editor-name" maxlength="160" required></label>
+        <label class="field"><span>优先级</span><input id="rule-editor-priority" type="number" min="0" max="1000"></label>
+        <label class="field"><span>项目名称</span><input id="rule-editor-project-name" maxlength="160"></label>
+        <label class="field"><span>显示名称</span><input id="rule-editor-service-name" maxlength="160"></label>
+        <label class="field"><span>Agent 来源</span><input id="rule-editor-agent" maxlength="160"></label>
+        <label class="field"><span>生命周期标签</span><select id="rule-editor-lifecycle"><option value="">不设置</option><option value="expected">预期服务</option><option value="safe_cleanup">可安全清理</option></select></label>
+        <label class="field field-full"><span>本机备注</span><textarea id="rule-editor-note" rows="3" maxlength="300"></textarea></label>
+        <label class="check-field"><input id="rule-editor-expected" type="checkbox"><span>预期服务</span></label>
+        <label class="check-field"><input id="rule-editor-protected" type="checkbox"><span>增加停止保护</span></label>
+        <label class="field field-full"><span id="rule-editor-confirmation-prompt">输入确认短语</span><input id="rule-editor-confirmation" autocomplete="off" spellcheck="false" required></label>
+      </div>
+      <footer><button class="button" type="button" id="rule-editor-cancel">取消</button><button class="button button-primary" type="submit">保存新版本</button></footer>
+    </form>
+  </dialog>
+
+  <dialog id="rule-versions-dialog" class="modal modal-wide">
+    <form method="dialog" class="modal-frame">
+      <header><div><span class="modal-kicker">LAST FIVE VERSIONS</span><h2 id="rule-versions-title">规则版本与回滚</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="关闭">×</button></header>
+      <div class="modal-content"><div class="warning-box">回滚不会删除当前历史，而是创建一个引用旧快照的新版本。</div><div id="rule-version-list" class="rule-list"></div></div>
+      <footer><button class="button" value="cancel">关闭</button></footer>
+    </form>
+  </dialog>
+
+  <dialog id="rule-import-dialog" class="modal modal-wide">
+    <form method="dialog" class="modal-frame" id="rule-import-form">
+      <header><div><span class="modal-kicker">LOCAL RULE PACK</span><h2>导入规则包并重绑定</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="关闭">×</button></header>
+      <div class="modal-content">
+        <div class="warning-box">导入不会自动跨机器匹配。先校验完整性并预览冲突，再由你为每条规则明确选择当前服务和复用范围；不会读取环境变量或完整命令。</div>
+        <label class="field"><span>选择 JSON 规则包（最大 256 KiB）</span><input id="rule-import-file" type="file" accept="application/json,.json"></label>
+        <div id="rule-import-summary" class="confidence-note">尚未选择规则包。</div>
+        <div id="rule-import-list" class="rule-import-list"></div>
+        <label class="field" id="rule-import-confirmation-field" hidden><span id="rule-import-confirmation-prompt">输入确认短语</span><input id="rule-import-confirmation" autocomplete="off" spellcheck="false"></label>
+      </div>
+      <footer><button class="button" type="button" id="rule-import-cancel">取消</button><button class="button button-primary" id="rule-import-submit" type="submit" disabled>导入所选规则</button></footer>
     </form>
   </dialog>
 

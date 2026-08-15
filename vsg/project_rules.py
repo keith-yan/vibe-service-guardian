@@ -10,10 +10,62 @@ from .models import ServiceRecord
 
 MAX_MANIFEST_BYTES = 64 * 1024
 CONTROL_RE = re.compile(r"[\x00-\x1f]")
+RULE_SCOPES = {"instance", "standard", "strict", "custom", "legacy"}
+RULE_SOURCES = {"user", "import", "migration"}
 
 
 class AttributionRuleError(ValueError):
     pass
+
+
+def infer_rule_scope(match: dict[str, Any]) -> str:
+    """Infer the deterministic matching scope for legacy and API callers."""
+
+    if match.get("fingerprint"):
+        return "instance"
+    if match.get("ownership_signature") and match.get("redacted_command_hash"):
+        return "strict"
+    if match.get("ownership_signature"):
+        return "standard"
+    return "custom"
+
+
+def rule_specificity(match: dict[str, Any], scope: str | None = None) -> int:
+    """Return a stable rank; larger values are always more specific."""
+
+    resolved = scope or infer_rule_scope(match)
+    base = {
+        "instance": 400,
+        "strict": 300,
+        "standard": 200,
+        "custom": 100,
+        "legacy": 50,
+    }.get(resolved, 0)
+    # Extra deterministic selectors refine a rule within its declared scope,
+    # without ever allowing a generic rule to outrank an instance rule.
+    refinements = sum(
+        1
+        for key in ("runtime", "port", "exe_contains", "cwd_prefix", "command_contains")
+        if match.get(key) not in (None, "")
+    )
+    return base + min(refinements, 9)
+
+
+def rule_order_key(rule: dict[str, Any]) -> tuple[int, float, int, int]:
+    """Resolve conflicts by scope, then the user's latest explicit intent."""
+
+    match = rule.get("match") or {}
+    specificity = int(
+        rule.get("specificity")
+        if rule.get("specificity") is not None
+        else rule_specificity(match, str(rule.get("scope") or "") or None)
+    )
+    return (
+        specificity,
+        float(rule.get("updated_at") or rule.get("created_at") or 0.0),
+        int(rule.get("priority") or 0),
+        int(rule.get("id") or 0) if str(rule.get("id") or "").isdigit() else 0,
+    )
 
 
 def _within_roots(path: Path, roots: Iterable[str]) -> bool:
@@ -50,6 +102,7 @@ def validate_rule_payload(raw: dict[str, Any], project_roots: Iterable[str]) -> 
     for key in (
         "fingerprint",
         "ownership_signature",
+        "redacted_command_hash",
         "exe_contains",
         "cwd_prefix",
         "command_contains",
@@ -93,10 +146,26 @@ def validate_rule_payload(raw: dict[str, Any], project_roots: Iterable[str]) -> 
         override["lifecycle_label"] = lifecycle_label
     if not override:
         raise AttributionRuleError("归属规则至少需要一个覆盖结果")
+    inferred_scope = infer_rule_scope(match)
+    scope = _text(raw.get("scope"), "scope", 20) or inferred_scope
+    if scope not in RULE_SCOPES:
+        raise AttributionRuleError("scope 必须是 instance、standard、strict、custom 或 legacy")
+    if scope == "instance" and not match.get("fingerprint"):
+        raise AttributionRuleError("instance 规则必须包含 fingerprint")
+    if scope in {"standard", "strict"} and not match.get("ownership_signature"):
+        raise AttributionRuleError(f"{scope} 规则必须包含 ownership_signature")
+    if scope == "strict" and not match.get("redacted_command_hash"):
+        raise AttributionRuleError("strict 规则必须包含 redacted_command_hash")
+    source = _text(raw.get("source"), "source", 20) or "user"
+    if source not in RULE_SOURCES:
+        raise AttributionRuleError("source 必须是 user、import 或 migration")
     return {
         "name": _text(raw.get("name"), "name") or "本地归属规则",
         "priority": max(0, min(int(raw.get("priority") or 100), 1000)),
         "enabled": bool(raw.get("enabled", True)),
+        "source": source,
+        "scope": scope,
+        "specificity": rule_specificity(match, scope),
         "match": match,
         "override": override,
     }
@@ -112,6 +181,7 @@ def rule_matches(service: ServiceRecord, rule: dict[str, Any]) -> bool:
     checks = {
         "fingerprint": service.fingerprint.lower(),
         "ownership_signature": str(service.metadata.get("ownership_signature") or "").lower(),
+        "redacted_command_hash": str(service.metadata.get("command_hash") or "").lower(),
         "exe_contains": (process.exe or process.name).lower(),
         "cwd_prefix": (process.cwd or "").lower(),
         "command_contains": command,
@@ -122,7 +192,7 @@ def rule_matches(service: ServiceRecord, rule: dict[str, Any]) -> bool:
         if expected is None:
             continue
         expected_text = str(expected).lower()
-        if key in {"fingerprint", "ownership_signature", "runtime"}:
+        if key in {"fingerprint", "ownership_signature", "redacted_command_hash", "runtime"}:
             if actual != expected_text:
                 return False
         elif key == "cwd_prefix":
@@ -138,10 +208,21 @@ def rule_matches(service: ServiceRecord, rule: dict[str, Any]) -> bool:
 
 
 def apply_rules(service: ServiceRecord, rules: Iterable[dict[str, Any]]) -> list[str]:
+    candidates = [rule for rule in rules if rule_matches(service, rule)]
+    candidates.sort(key=rule_order_key, reverse=True)
+    if not candidates:
+        return []
+    rule = candidates[0]
     matched: list[str] = []
-    for rule in sorted(rules, key=lambda item: int(item.get("priority") or 0), reverse=True):
-        if not rule_matches(service, rule):
-            continue
+    candidate_ids = [str(item.get("id") or item.get("name") or "local-rule") for item in candidates]
+    service.metadata["attribution_rule_candidates"] = candidate_ids[:20]
+    if len(candidates) > 1:
+        service.metadata["attribution_rule_conflict"] = {
+            "winner_rule_id": candidate_ids[0],
+            "candidate_rule_ids": candidate_ids[:20],
+            "resolution": "specificity_then_latest_user_intent",
+        }
+    for rule in candidates[:1]:
         override = rule.get("override") or {}
         if override.get("project_path"):
             service.project.path = str(override["project_path"])
@@ -177,7 +258,6 @@ def apply_rules(service: ServiceRecord, rules: Iterable[dict[str, Any]]) -> list
             if lifecycle_label == "expected":
                 service.expected = True
         matched.append(str(rule.get("id") or rule_name))
-        break
     return matched
 
 

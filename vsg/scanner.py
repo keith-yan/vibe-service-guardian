@@ -141,6 +141,30 @@ def redacted_command_hash(arguments: list[str] | tuple[str, ...] | None) -> str:
     return hashlib.sha256(command.encode("utf-8", errors="replace")).hexdigest()
 
 
+def attribution_episode_key(service: ServiceRecord) -> str:
+    """Identify one service lifetime without persisting PID/path/command material."""
+
+    contract = service.metadata.get("attribution_contract") or {}
+    process_identity = contract.get("process_identity") or {}
+    managed_identity = (
+        process_identity.get("container_id")
+        or process_identity.get("linux_pid")
+        or process_identity.get("engine_reported_pid")
+        or ""
+    )
+    created_ms = int(float(service.process.create_time or 0.0) * 1000)
+    material = "|".join(
+        (
+            "v1",
+            str(service.source),
+            str(service.fingerprint),
+            str(created_ms),
+            str(managed_identity),
+        )
+    )
+    return hashlib.sha256(material.encode("utf-8", errors="replace")).hexdigest()
+
+
 class Scanner:
     def __init__(self, config: AppConfig, storage: Storage | None = None):
         self.config = config
@@ -316,6 +340,15 @@ class Scanner:
             ancestors = self._ancestors(process, processes)
             project = attribute_project(process, ancestors, self.config.project_roots)
             agent = attribute_agent(process, ancestors, project.path, session_hints)
+            managed_agent_child = agent.kind == "managed_child"
+            agent_parent = next(
+                (
+                    (ancestor, identify_agent_process(ancestor))
+                    for ancestor in ancestors
+                    if identify_agent_process(ancestor) is not None
+                ),
+                None,
+            )
             runtime = detect_runtime(process)
             windows_services = service_map.get(pid, [])
             source = "windows_service" if windows_services else "agent" if pid in agent_pids else "host"
@@ -335,6 +368,7 @@ class Scanner:
                 bool(mark.get("protected"))
                 or process.name.lower() in set(self.config.protected_names)
                 or source == "agent"
+                or managed_agent_child
             )
             if pid in {os.getpid(), os.getppid()}:
                 protected = True
@@ -347,6 +381,8 @@ class Scanner:
                 tags.append("limited_visibility")
             if agent.provider:
                 tags.append("agent_attributed")
+            if managed_agent_child:
+                tags.append("agent_managed_child")
             if windows_services:
                 display_name = windows_services[0]
             elif source == "agent" and agent.provider:
@@ -378,9 +414,18 @@ class Scanner:
                     "stoppable_candidate": source == "host" and runtime in STOPPABLE_RUNTIMES and not protected,
                     "openable_candidate": runtime in OPENABLE_RUNTIMES,
                     "agent_process": source == "agent",
+                    "agent_managed_child": managed_agent_child,
+                    "agent_parent_pid": agent_parent[0].pid if agent_parent else None,
+                    "agent_parent_provider": (
+                        agent_parent[1].provider if agent_parent and agent_parent[1] else None
+                    ),
                     "model_runtime": runtime in MODEL_SERVER_RUNTIMES,
                     "auto_restart": None,
-                    "lifecycle_manager": _lifecycle_manager(source, windows_services, ancestors),
+                    "lifecycle_manager": (
+                        "Agent/IDE parent"
+                        if managed_agent_child
+                        else _lifecycle_manager(source, windows_services, ancestors)
+                    ),
                 },
             )
             services.append(service)
@@ -438,7 +483,17 @@ class Scanner:
         current_marks = self.storage.marks() if self.storage else {}
         matched_rules = 0
         manifests_loaded = 0
+        attribution_evaluations: list[dict[str, Any]] = []
         for service in services:
+            episode_key = attribution_episode_key(service)
+            service.metadata["attribution_episode_key"] = episode_key
+            initial_attribution = {
+                "project_name": service.project.name,
+                "agent_provider": service.agent.provider,
+                "expected": bool(service.expected),
+                "protected": bool(service.protected),
+                "source": service.metadata.get("attribution_source") or "scanner",
+            }
             if apply_project_manifest(service):
                 manifests_loaded += 1
             matched = apply_rules(service, rules)
@@ -458,6 +513,18 @@ class Scanner:
             )
             if service.agent.provider and "agent_attributed" not in service.tags:
                 service.tags.append("agent_attributed")
+            winner_rule_id: int | None = None
+            if matched and str(matched[0]).isdigit():
+                winner_rule_id = int(matched[0])
+            attribution_evaluations.append(
+                {
+                    "episode_key": episode_key,
+                    "service_fingerprint": service.fingerprint,
+                    "source": service.source,
+                    "initial": initial_attribution,
+                    "winner_rule_id": winner_rule_id,
+                }
+            )
         collectors["attribution_rules"] = {
             "status": "ok",
             "message": f"已加载 {len(rules)} 条本地规则，命中 {matched_rules} 个服务；{manifests_loaded} 个项目清单生效",
@@ -484,6 +551,9 @@ class Scanner:
         assess_all(services, self.config, histories=histories, now=started)
         if self.storage:
             self.storage.observe(services, now=started)
+            self.storage.record_attribution_evaluations(
+                attribution_evaluations, observed_at=started
+            )
 
         services.sort(
             key=lambda item: (

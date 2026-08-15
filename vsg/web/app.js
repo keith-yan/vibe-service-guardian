@@ -25,8 +25,11 @@ const state = {
   snapshots: [],
   advisor: null,
   logEvents: null,
-  operations: { incidents: null, timeline: [], inventory: [], rules: [], topology: null },
+  operations: { incidents: null, timeline: [], inventory: [], rules: [], ruleMetrics: null, topology: null },
   attributionTarget: null,
+  ruleEditTarget: null,
+  rulePack: null,
+  rulePackPreview: null,
   confirmationAction: null,
   detailTarget: null,
   impactReport: null,
@@ -76,6 +79,18 @@ function showToast(message, error = false) {
   toast.hidden = false;
   clearTimeout(showToast.timer);
   showToast.timer = setTimeout(() => { toast.hidden = true; }, 3200);
+}
+
+function downloadJson(value, filename) {
+  const blob = new Blob([`${JSON.stringify(value, null, 2)}\n`], { type: "application/json;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 function formatTime(timestamp) {
@@ -1071,14 +1086,91 @@ function renderTopology(topology) {
   container.innerHTML = rows.join("");
 }
 
+function ruleMatchSummary(rule, english) {
+  const match = rule.match || {};
+  const labels = english
+    ? { instance: "Current instance", standard: "Executable + working directory", strict: "Paths + redacted command hash", custom: "Custom", legacy: "Legacy" }
+    : { instance: "当前实例", standard: "可执行路径 + 工作目录", strict: "路径 + 脱敏命令哈希", custom: "自定义", legacy: "旧版" };
+  const evidence = [];
+  if (match.fingerprint) evidence.push("fingerprint " + String(match.fingerprint).slice(0, 10) + "…");
+  if (match.ownership_signature) evidence.push("ownership " + String(match.ownership_signature).slice(0, 10) + "…");
+  if (match.redacted_command_hash) evidence.push("command " + String(match.redacted_command_hash).slice(0, 10) + "…");
+  if (match.runtime) evidence.push("runtime " + match.runtime);
+  if (match.port) evidence.push("port " + match.port);
+  for (const key of ["exe_contains", "cwd_prefix", "command_contains"]) {
+    if (match[key]) evidence.push(key + " [local selector]");
+  }
+  return (labels[rule.scope] || rule.scope || (english ? "Unknown scope" : "范围未知"))
+    + " · " + (evidence.join(" · ") || (english ? "No visible evidence" : "无可见证据"));
+}
+
+function ruleOverrideSummary(rule, english) {
+  const override = rule.override || {};
+  const values = [];
+  if (override.project_name) values.push((english ? "Project " : "项目 ") + override.project_name);
+  if (override.service_name) values.push((english ? "Service " : "服务 ") + override.service_name);
+  if (override.agent_provider) values.push("Agent " + override.agent_provider);
+  if (override.lifecycle_label) values.push((english ? "Lifecycle " : "生命周期 ") + override.lifecycle_label);
+  if (Object.hasOwn(override, "expected")) values.push("expected=" + Boolean(override.expected));
+  if (Object.hasOwn(override, "protected")) values.push("protected=" + Boolean(override.protected));
+  if (override.note) values.push((english ? "Note " : "备注 ") + override.note);
+  return values.join(" · ") || (english ? "No visible override" : "无可见覆盖结果");
+}
+
 function renderAttributionRules(rules) {
   const container = $("#attribution-rule-list");
   container.replaceChildren();
-  if (!rules.length) container.innerHTML = `<span class="confidence-note">${window.VSG_I18N?.locale === "en" ? "No user correction rule." : "暂无用户纠正规则；可在服务列表点击 ✎ 创建。"}</span>`;
-  for (const rule of rules) {
+  const english = window.VSG_I18N?.locale === "en";
+  const query = $("#attribution-rule-search")?.value.trim().toLocaleLowerCase() || "";
+  const filtered = rules.filter((rule) => !query || [
+    rule.name, ruleOverrideSummary(rule, english), rule.scope, rule.source,
+  ].join(" ").toLocaleLowerCase().includes(query));
+  const metrics = state.operations.ruleMetrics || {};
+  const rate = metrics.correction_rate == null
+    ? (english ? "insufficient samples" : "样本不足")
+    : (Number(metrics.correction_rate) * 100).toFixed(1) + "%";
+  $("#attribution-rule-metrics").textContent = english
+    ? "Last " + (metrics.window_days || 30) + " days: " + (metrics.corrected_episodes || 0)
+      + "/" + (metrics.episodes || 0) + " corrected service episodes (" + rate + "); "
+      + (metrics.rules_needing_review || 0) + " rules need review."
+    : "近 " + (metrics.window_days || 30) + " 天：" + (metrics.corrected_episodes || 0)
+      + "/" + (metrics.episodes || 0) + " 个服务生命周期被纠正（" + rate + "）；"
+      + (metrics.rules_needing_review || 0) + " 条规则建议复核。";
+  if (!filtered.length) {
+    container.innerHTML = '<span class="confidence-note">'
+      + (english ? "No matching user correction rule." : "暂无匹配的用户纠正规则；可在服务列表点击 ✎ 创建。")
+      + "</span>";
+  }
+  for (const rule of filtered) {
     const node = document.createElement("div");
-    node.className = "rule-item";
-    node.innerHTML = `<div><strong>#${escapeHtml(rule.id)} · ${escapeHtml(rule.name)}</strong><span>${escapeHtml(JSON.stringify(rule.match))}</span><small>${escapeHtml(JSON.stringify(rule.override))}</small></div><button class="button button-small" type="button" data-delete-rule="${escapeHtml(rule.id)}">${window.VSG_I18N?.locale === "en" ? "Delete" : "删除"}</button>`;
+    node.className = "rule-item" + (rule.enabled ? "" : " rule-disabled")
+      + (rule.needs_review ? " rule-needs-review" : "");
+    const badges = [
+      rule.enabled ? (english ? "Enabled" : "已启用") : (english ? "Disabled" : "已禁用"),
+      rule.scope || "legacy",
+      rule.source || "user",
+      rule.needs_review ? (english ? "Needs review" : "建议复核") : "",
+    ].filter(Boolean);
+    const stats = (english ? "Hits " : "命中 ") + (rule.hit_count || 0)
+      + " · " + (english ? "Overrides " : "被覆盖 ") + (rule.override_count || 0)
+      + " · " + (english ? "Versions " : "版本 ") + (rule.version_count || 0)
+      + (rule.last_hit_at ? " · " + (english ? "Last hit " : "最近命中 ") + formatDate(rule.last_hit_at) : "");
+    node.innerHTML = '<div class="rule-item-content"><div class="rule-item-title"><strong>#'
+      + escapeHtml(rule.id) + " · " + escapeHtml(rule.name)
+      + '</strong><span class="rule-badges">'
+      + badges.map((value) => "<b>" + escapeHtml(value) + "</b>").join("")
+      + "</span></div><span>" + escapeHtml(ruleMatchSummary(rule, english))
+      + "</span><small>" + escapeHtml(ruleOverrideSummary(rule, english))
+      + "</small><small>" + escapeHtml(stats)
+      + '</small></div><div class="rule-actions"><button class="button button-small" type="button" data-edit-rule="'
+      + escapeHtml(rule.id) + '">' + (english ? "Edit" : "编辑")
+      + '</button><button class="button button-small" type="button" data-toggle-rule="'
+      + escapeHtml(rule.id) + '" data-enable-rule="' + (rule.enabled ? "false" : "true") + '">'
+      + (rule.enabled ? (english ? "Disable" : "禁用") : (english ? "Enable" : "启用"))
+      + '</button><button class="button button-small" type="button" data-rule-versions="'
+      + escapeHtml(rule.id) + '">' + (english ? "Versions" : "版本")
+      + '</button><button class="button button-small" type="button" data-delete-rule="'
+      + escapeHtml(rule.id) + '">' + (english ? "Delete" : "删除") + "</button></div>";
     container.appendChild(node);
   }
 }
@@ -1110,6 +1202,7 @@ async function loadOperations() {
     timeline: incidents.items || [],
     inventory: inventory.items || [],
     rules: rules.items || [],
+    ruleMetrics: rules.metrics || null,
     topology: topology.topology || {},
   };
   renderOperations();
@@ -1140,6 +1233,250 @@ function deleteAttributionRule(button) {
   );
 }
 
+function ruleById(ruleId) {
+  return (state.operations.rules || []).find((item) => Number(item.id) === Number(ruleId)) || null;
+}
+
+function openRuleEditor(ruleId) {
+  const rule = ruleById(ruleId);
+  if (!rule) return;
+  state.ruleEditTarget = rule;
+  const override = rule.override || {};
+  $("#rule-editor-title").textContent = (window.VSG_I18N?.locale === "en" ? "Edit attribution rule #" : "编辑归属规则 #") + rule.id;
+  $("#rule-editor-evidence").textContent = ruleMatchSummary(rule, window.VSG_I18N?.locale === "en");
+  $("#rule-editor-name").value = rule.name || "";
+  $("#rule-editor-priority").value = rule.priority ?? 100;
+  $("#rule-editor-project-name").value = override.project_name || "";
+  $("#rule-editor-service-name").value = override.service_name || "";
+  $("#rule-editor-agent").value = override.agent_provider || "";
+  $("#rule-editor-lifecycle").value = override.lifecycle_label || "";
+  $("#rule-editor-note").value = override.note || "";
+  $("#rule-editor-expected").checked = Boolean(override.expected);
+  $("#rule-editor-protected").checked = Boolean(override.protected);
+  const phrase = "UPDATE RULE " + rule.id;
+  $("#rule-editor-confirmation-prompt").textContent = (window.VSG_I18N?.locale === "en" ? "Enter confirmation phrase " : "输入确认短语 ") + phrase;
+  $("#rule-editor-confirmation").value = "";
+  $("#rule-editor-confirmation").placeholder = phrase;
+  $("#rule-editor-dialog").showModal();
+}
+
+async function submitRuleEditor(event) {
+  event.preventDefault();
+  const current = state.ruleEditTarget;
+  if (!current) return;
+  const override = { ...(current.override || {}) };
+  const textFields = {
+    project_name: $("#rule-editor-project-name").value.trim(),
+    service_name: $("#rule-editor-service-name").value.trim(),
+    agent_provider: $("#rule-editor-agent").value.trim(),
+    note: $("#rule-editor-note").value.trim(),
+    lifecycle_label: $("#rule-editor-lifecycle").value,
+  };
+  for (const [key, value] of Object.entries(textFields)) {
+    if (value) override[key] = value;
+    else delete override[key];
+  }
+  override.expected = $("#rule-editor-expected").checked;
+  override.protected = $("#rule-editor-protected").checked;
+  const rule = {
+    name: $("#rule-editor-name").value.trim(),
+    priority: Number($("#rule-editor-priority").value || 100),
+    enabled: Boolean(current.enabled),
+    scope: current.scope,
+    match: current.match,
+    override,
+  };
+  try {
+    await api("/api/attribution/rules/update", {
+      method: "POST",
+      body: JSON.stringify({
+        rule_id: current.id,
+        rule,
+        confirmation: $("#rule-editor-confirmation").value.trim(),
+      }),
+    });
+    $("#rule-editor-dialog").close();
+    state.ruleEditTarget = null;
+    await loadOperations();
+    showToast(window.VSG_I18N?.locale === "en" ? "New rule version saved" : "归属规则新版本已保存");
+  } catch (error) { showToast(error.message, true); }
+}
+
+function confirmRuleStatus(ruleId, enabled) {
+  const phrase = (enabled ? "ENABLE" : "DISABLE") + " RULE " + ruleId;
+  state.confirmationAction = { kind: "rule-status", ruleId, enabled, phrase };
+  openConfirmationDialog(
+    enabled ? (window.VSG_I18N?.locale === "en" ? "Enable attribution rule" : "启用归属规则") : (window.VSG_I18N?.locale === "en" ? "Disable attribution rule" : "禁用归属规则"),
+    window.VSG_I18N?.locale === "en" ? "Creates an auditable rule version; no process is changed." : "该操作会生成可审计的新版本；不会改变任何进程。",
+    phrase,
+  );
+}
+
+async function openRuleVersions(ruleId) {
+  try {
+    const payload = await api("/api/attribution/rules/versions?rule_id=" + encodeURIComponent(ruleId));
+    $("#rule-versions-title").textContent = (window.VSG_I18N?.locale === "en" ? "Rule versions #" : "规则版本 #") + ruleId;
+    const container = $("#rule-version-list");
+    container.replaceChildren();
+    for (const version of payload.items || []) {
+      const node = document.createElement("div");
+      node.className = "rule-item";
+      const summary = ruleOverrideSummary(version.snapshot || {}, window.VSG_I18N?.locale === "en");
+      node.innerHTML = '<div><strong>v' + escapeHtml(version.version) + " · " + escapeHtml(version.action)
+        + "</strong><span>" + escapeHtml(formatDate(version.created_at))
+        + " · sha256 " + escapeHtml(String(version.snapshot_sha256 || "").slice(0, 12))
+        + "…</span><small>" + escapeHtml(summary)
+        + '</small></div><button class="button button-small" type="button" data-restore-rule="'
+        + escapeHtml(ruleId) + '" data-restore-version="' + escapeHtml(version.version) + '">'
+        + (window.VSG_I18N?.locale === "en" ? "Restore" : "回滚到此版本") + "</button>";
+      container.appendChild(node);
+    }
+    if (!(payload.items || []).length) container.innerHTML = '<span class="confidence-note">No retained version.</span>';
+    $("#rule-versions-dialog").showModal();
+  } catch (error) { showToast(error.message, true); }
+}
+
+function confirmRuleRestore(ruleId, version) {
+  const phrase = "RESTORE RULE " + ruleId + " VERSION " + version;
+  state.confirmationAction = { kind: "rule-restore", ruleId, version, phrase };
+  openConfirmationDialog(
+    window.VSG_I18N?.locale === "en" ? "Restore attribution rule version" : "回滚归属规则版本",
+    window.VSG_I18N?.locale === "en" ? "The current state is retained in history and a new revision is created." : "当前状态仍保留在历史中，并创建一个引用旧快照的新版本。",
+    phrase,
+  );
+}
+
+function requestRuleExport() {
+  state.confirmationAction = { kind: "export-rules", phrase: "EXPORT RULES" };
+  openConfirmationDialog(
+    window.VSG_I18N?.locale === "en" ? "Export local attribution rules" : "导出本机归属规则",
+    window.VSG_I18N?.locale === "en" ? "Downloads a redacted JSON pack. Local paths and unsupported selectors are omitted; review before sharing." : "下载脱敏 JSON 规则包；本机路径和非便携选择器会被省略，对外分享前仍需人工复核。",
+    "EXPORT RULES",
+  );
+}
+
+function openRuleImport() {
+  state.rulePack = null;
+  state.rulePackPreview = null;
+  $("#rule-import-file").value = "";
+  $("#rule-import-list").replaceChildren();
+  $("#rule-import-summary").textContent = window.VSG_I18N?.locale === "en" ? "No rule pack selected." : "尚未选择规则包。";
+  $("#rule-import-confirmation-field").hidden = true;
+  $("#rule-import-confirmation").value = "";
+  $("#rule-import-submit").disabled = true;
+  $("#rule-import-dialog").showModal();
+}
+
+function serviceOptionLabel(service) {
+  return (service.display_name || service.id) + " · " + (service.project?.name || service.source || "unknown")
+    + " · PID " + (service.process?.pid || 0);
+}
+
+function updateRuleImportConfirmation() {
+  const selected = $$("#rule-import-list input[data-import-index]:checked");
+  const preview = state.rulePackPreview;
+  if (!preview || !selected.length) {
+    $("#rule-import-confirmation-field").hidden = true;
+    $("#rule-import-submit").disabled = true;
+    return;
+  }
+  const phrase = "IMPORT RULES " + selected.length + " " + preview.digest.slice(0, 12);
+  $("#rule-import-confirmation-field").hidden = false;
+  $("#rule-import-confirmation-prompt").textContent = (window.VSG_I18N?.locale === "en" ? "Enter confirmation phrase " : "输入确认短语 ") + phrase;
+  $("#rule-import-confirmation").placeholder = phrase;
+  $("#rule-import-submit").disabled = false;
+}
+
+function renderRuleImportPreview(preview) {
+  const english = window.VSG_I18N?.locale === "en";
+  const services = state.snapshot?.services || [];
+  $("#rule-import-summary").textContent = english
+    ? preview.count + " rules · " + preview.summary.exact_candidates + " exact candidates · "
+      + preview.summary.ambiguous + " ambiguous · " + preview.summary.unmatched + " unmatched · "
+      + preview.summary.conflicts + " local conflicts."
+    : preview.count + " 条规则 · " + preview.summary.exact_candidates + " 条有唯一候选 · "
+      + preview.summary.ambiguous + " 条多候选 · " + preview.summary.unmatched + " 条未匹配 · "
+      + preview.summary.conflicts + " 条与本机规则冲突。";
+  const container = $("#rule-import-list");
+  container.replaceChildren();
+  for (const item of preview.items || []) {
+    const row = document.createElement("div");
+    row.className = "rule-import-item";
+    const candidate = item.candidate_service_ids?.length === 1 ? item.candidate_service_ids[0] : "";
+    const options = ['<option value="">' + (english ? "Select current service…" : "选择当前服务…") + "</option>"]
+      .concat(services.map((service) => '<option value="' + escapeHtml(service.id) + '"'
+        + (service.id === candidate ? " selected" : "") + ">" + escapeHtml(serviceOptionLabel(service)) + "</option>"))
+      .join("");
+    row.innerHTML = '<label class="check-field"><input type="checkbox" data-import-index="'
+      + escapeHtml(item.index) + '"' + (candidate ? " checked" : "") + "><span><strong>"
+      + escapeHtml(item.name) + "</strong><small>" + escapeHtml(item.status)
+      + (item.existing_conflict_rule_ids?.length ? " · conflicts #" + escapeHtml(item.existing_conflict_rule_ids.join(", #")) : "")
+      + '</small></span></label><label class="field"><span>' + (english ? "Explicit rebind" : "明确重绑定")
+      + '</span><select data-import-service="' + escapeHtml(item.index) + '">' + options
+      + '</select></label><label class="field"><span>' + (english ? "Scope" : "复用范围")
+      + '</span><select data-import-scope="' + escapeHtml(item.index)
+      + '"><option value="instance">instance</option><option value="standard" selected>standard</option><option value="strict">strict</option></select></label>';
+    container.appendChild(row);
+  }
+  updateRuleImportConfirmation();
+}
+
+async function previewRuleImport(event) {
+  const file = event.target.files?.[0];
+  if (!file) return;
+  if (file.size > 256 * 1024) {
+    showToast(window.VSG_I18N?.locale === "en" ? "Rule pack exceeds 256 KiB" : "规则包超过 256 KiB", true);
+    event.target.value = "";
+    return;
+  }
+  try {
+    const pack = JSON.parse(await file.text());
+    const payload = await api("/api/attribution/rules/import/preview", {
+      method: "POST",
+      body: JSON.stringify({ pack }),
+    });
+    state.rulePack = pack;
+    state.rulePackPreview = payload.preview;
+    renderRuleImportPreview(payload.preview);
+  } catch (error) {
+    state.rulePack = null;
+    state.rulePackPreview = null;
+    $("#rule-import-list").replaceChildren();
+    showToast(error.message, true);
+  }
+}
+
+async function submitRuleImport(event) {
+  event.preventDefault();
+  if (!state.rulePack || !state.rulePackPreview) return;
+  const bindings = [];
+  for (const checkbox of $$("#rule-import-list input[data-import-index]:checked")) {
+    const index = Number(checkbox.dataset.importIndex);
+    const serviceId = $('[data-import-service="' + index + '"]').value;
+    const scope = $('[data-import-scope="' + index + '"]').value;
+    if (!serviceId) {
+      showToast(window.VSG_I18N?.locale === "en" ? "Every selected rule needs a current service" : "每条选中规则都必须明确选择当前服务", true);
+      return;
+    }
+    bindings.push({ index, service_id: serviceId, scope });
+  }
+  try {
+    const payload = await api("/api/attribution/rules/import", {
+      method: "POST",
+      body: JSON.stringify({
+        pack: state.rulePack,
+        bindings,
+        confirmation: $("#rule-import-confirmation").value.trim(),
+      }),
+    });
+    $("#rule-import-dialog").close();
+    state.rulePack = null;
+    state.rulePackPreview = null;
+    await loadOperations();
+    showToast((window.VSG_I18N?.locale === "en" ? "Imported rules: " : "已导入规则：") + payload.rule_ids.length);
+  } catch (error) { showToast(error.message, true); }
+}
+
 function openConfirmationDialog(title, summary, phrase) {
   $("#confirmation-title").textContent = title;
   $("#confirmation-summary").textContent = summary;
@@ -1160,6 +1497,19 @@ async function submitConfirmation(event) {
       await api("/api/attribution/rules/delete", { method: "POST", body: JSON.stringify({ rule_id: action.ruleId, confirmation }) });
       await loadOperations();
       showToast(window.VSG_I18N?.locale === "en" ? "Attribution rule deleted" : "归属规则已删除");
+    } else if (action.kind === "rule-status") {
+      await api("/api/attribution/rules/status", { method: "POST", body: JSON.stringify({ rule_id: action.ruleId, enabled: action.enabled, confirmation }) });
+      await loadOperations();
+      showToast(action.enabled ? (window.VSG_I18N?.locale === "en" ? "Attribution rule enabled" : "归属规则已启用") : (window.VSG_I18N?.locale === "en" ? "Attribution rule disabled" : "归属规则已禁用"));
+    } else if (action.kind === "rule-restore") {
+      await api("/api/attribution/rules/restore", { method: "POST", body: JSON.stringify({ rule_id: action.ruleId, version: action.version, confirmation }) });
+      if ($("#rule-versions-dialog").open) $("#rule-versions-dialog").close();
+      await loadOperations();
+      showToast(window.VSG_I18N?.locale === "en" ? "Rule version restored as a new revision" : "已将旧快照恢复为一个新版本");
+    } else if (action.kind === "export-rules") {
+      const payload = await api("/api/attribution/rules/export", { method: "POST", body: JSON.stringify({ confirmation }) });
+      downloadJson(payload.export, payload.filename || "vsg-attribution-rules.json");
+      showToast(window.VSG_I18N?.locale === "en" ? "Redacted rule pack downloaded" : "脱敏归属规则包已下载");
     } else if (action.kind === "delete-profile") {
       await api("/api/calibration-profiles/delete", { method: "POST", body: JSON.stringify({ profile_id: action.profileId, confirmation }) });
       await loadPlannerStatus();
@@ -1193,17 +1543,19 @@ function openAttributionDialog(service) {
   $("#attribution-agent").value = service.agent?.provider || "";
   $("#attribution-project-name").value = service.project?.name || "";
   $("#attribution-project-path").value = service.project?.path || "";
+  $("#attribution-note").value = service.metadata?.attribution_rule_note || "";
   const historicalLabel = service.metadata?.historical_lifecycle_label || "";
   $("#attribution-expected").checked = Boolean(
     service.expected && historicalLabel !== "expected"
   );
   $("#attribution-protected").checked = Boolean(service.protected);
   $("#attribution-lifecycle-label").value = historicalLabel;
-  $("#attribution-inherit").checked = Boolean(
-    historicalLabel && service.metadata?.historical_label_inherited
-  );
-  $("#attribution-inherit").disabled = !(
-    historicalLabel && service.metadata?.ownership_signature
+  $("#attribution-inherit").checked = false;
+  const reusable = Boolean(service.metadata?.ownership_signature);
+  $("#attribution-reuse-scope").value = reusable ? "standard" : "instance";
+  $("#attribution-reuse-scope").querySelector('option[value="standard"]').disabled = !reusable;
+  $("#attribution-reuse-scope").querySelector('option[value="strict"]').disabled = !(
+    reusable && service.metadata?.command_hash
   );
   $("#attribution-clear-label").hidden = !historicalLabel;
   $("#attribution-dialog").showModal();
@@ -1220,6 +1572,7 @@ async function submitAttribution(event) {
     project_path: $("#attribution-project-path").value.trim(),
     expected: $("#attribution-expected").checked,
     protected: $("#attribution-protected").checked,
+    note: $("#attribution-note").value.trim(),
   };
   const lifecycleLabel = $("#attribution-lifecycle-label").value;
   if (lifecycleLabel) override.lifecycle_label = lifecycleLabel;
@@ -1227,7 +1580,8 @@ async function submitAttribution(event) {
   try {
     await postService("/api/service/attribute", service, {
       override,
-      inherit_similar: $("#attribution-inherit").checked,
+      inherit_similar: false,
+      reuse_scope: $("#attribution-reuse-scope").value,
       name: lifecycleLabel ? `Historical lifecycle label · ${service.display_name}` : undefined,
     });
     $("#attribution-dialog").close();
@@ -2292,6 +2646,16 @@ function bindEvents() {
     $("#attribution-inherit").disabled = !canInherit;
     $("#attribution-inherit").checked = canInherit;
   });
+  $("#rule-editor-form").addEventListener("submit", submitRuleEditor);
+  $("#rule-editor-cancel").addEventListener("click", () => { state.ruleEditTarget = null; $("#rule-editor-dialog").close(); });
+  $("#rule-versions-dialog").addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-restore-rule]");
+    if (button) confirmRuleRestore(Number(button.dataset.restoreRule), Number(button.dataset.restoreVersion));
+  });
+  $("#rule-import-form").addEventListener("submit", submitRuleImport);
+  $("#rule-import-cancel").addEventListener("click", () => $("#rule-import-dialog").close());
+  $("#rule-import-file").addEventListener("change", previewRuleImport);
+  $("#rule-import-list").addEventListener("change", updateRuleImportConfirmation);
   $("#confirmation-form").addEventListener("submit", submitConfirmation);
   $("#confirmation-cancel").addEventListener("click", () => { state.confirmationAction = null; $("#confirmation-dialog").close(); });
   $$(".workspace-tab").forEach((button) => button.addEventListener("click", () => activateView(button.dataset.view)));
@@ -2332,7 +2696,19 @@ function bindEvents() {
   $("#model-inventory-form").addEventListener("submit", submitModelInventory);
   $("#timeline-filter-apply").addEventListener("click", async () => { try { await loadOperations(); } catch (error) { showToast(error.message, true); } });
   $("#timeline-category").addEventListener("change", renderTimeline);
-  $("#attribution-rule-list").addEventListener("click", (event) => { const button = event.target.closest("button[data-delete-rule]"); if (button) deleteAttributionRule(button); });
+  $("#attribution-rule-search").addEventListener("input", () => renderAttributionRules(state.operations.rules || []));
+  $("#attribution-rule-export").addEventListener("click", requestRuleExport);
+  $("#attribution-rule-import").addEventListener("click", openRuleImport);
+  $("#attribution-rule-list").addEventListener("click", (event) => {
+    const deleteButton = event.target.closest("button[data-delete-rule]");
+    if (deleteButton) return deleteAttributionRule(deleteButton);
+    const editButton = event.target.closest("button[data-edit-rule]");
+    if (editButton) return openRuleEditor(Number(editButton.dataset.editRule));
+    const toggleButton = event.target.closest("button[data-toggle-rule]");
+    if (toggleButton) return confirmRuleStatus(Number(toggleButton.dataset.toggleRule), toggleButton.dataset.enableRule === "true");
+    const versionsButton = event.target.closest("button[data-rule-versions]");
+    if (versionsButton) return openRuleVersions(Number(versionsButton.dataset.ruleVersions));
+  });
   $("#model-inventory-body").addEventListener("click", async (event) => {
     const button = event.target.closest("button[data-inventory-advisor]");
     if (!button) return;

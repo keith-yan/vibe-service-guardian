@@ -12,7 +12,7 @@ This roadmap describes intended work, not commitments or completed adoption. Pri
 
 Exit criteria: all local automated gates pass; current-host portable path is rebuilt and smoke-tested; unsupported real-platform claims remain explicitly unverified.
 
-## 0.8.4 — bounded daily-use P0 closure (current, unreleased)
+## 0.8.4 — bounded daily-use P0 closure (completed local milestone, not published)
 
 - Observe a stopped host service for a user-selected 5/15/30-minute window and report evidence-backed relaunch without a second automatic stop.
 - Reuse explicit user lifecycle labels through a one-way executable-path and working-directory identity while preserving every existing stop guard.
@@ -21,9 +21,19 @@ Exit criteria: all local automated gates pass; current-host portable path is reb
 
 Exit criteria: P0-specific tests and the full local gate pass; the Windows portable package is rebuilt and smoke-tested; no P1 feature or target-platform claim is silently included.
 
-## 0.8.5 — low-friction startup and native acceptance
+## 0.8.5 — attribution evolution P2-A (current, unreleased)
+
+- Turn an explicit ownership correction into a deterministic local rule with instance, standard, or strict matching scope.
+- Keep the latest five auditable rule versions, deterministic conflict resolution, hit/override evidence, and a unique-service-episode correction rate.
+- Export a redacted, integrity-protected JSON rule pack; require preview, conflict disclosure, and explicit service rebinding before import.
+- Protect Agent/IDE-managed child processes through visible parent evidence and replace broad Docker inspection with a fixed metadata allowlist that excludes container environment variables.
+
+Exit criteria: schema-6 migration, conflict, rollback, rule-pack, Agent-child, and Docker-privacy tests pass; the full local gate and current-host portable package pass; no P2-B native-platform claim is included.
+
+## 0.8.6 — managed-runtime evidence and native acceptance P2-B
 
 - Execute Windows 10/11, Apple Silicon macOS, Intel macOS, Ubuntu/Linux x86_64, and Linux arm64 acceptance on real hardware.
+- Strengthen read-only systemd and launchd unit/label evidence only where the native platform exposes it without privilege escalation.
 - Validate real Hermes and OpenCode schema variants and downgrade behavior.
 - Fix only defects exposed by those matrices; do not add remote control or automatic cleanup.
 - Publish a redacted compatibility matrix with exact OS/runtime versions and evidence dates.
@@ -35,7 +45,7 @@ Exit criteria: each supported claim has a native evidence record or is downgrade
 - Create the public repository, enable CI, issue templates, discussions/feedback routing, and private vulnerability reporting.
 - Publish unsigned prereleases with checksums, SBOMs, reproducible commands, and known limitations.
 - Collect consented case studies and improve attribution/stale rules from deduplicated outcomes.
-- Add importable/exportable rule packs only after signature, provenance, and rollback design is reviewed.
+- Review anonymized, explicitly contributed rule-pack patterns only after provenance and consent controls are documented; VSG itself remains local and has no synchronization channel.
 
 Exit criteria: at least two maintenance cycles, reproducible public checks, and no unresolved critical security finding.
 
