@@ -37,6 +37,7 @@ class WebAssetTests(unittest.TestCase):
         self.assertIn('vsg.locale', i18n)
         self.assertIn('navigator.languages', i18n)
         self.assertIn('Service Monitor', i18n)
+        self.assertIn('["不设置", "Not set"]', i18n)
 
     def test_runtime_checkup_assets_and_explicit_actions_are_present(self):
         html = resources.files("vsg").joinpath("web", "index.html").read_text(encoding="utf-8")

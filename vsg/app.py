@@ -52,6 +52,13 @@ from .privacy import atomic_write_private_text, ensure_private_directory, harden
 from .runtime_probe import RuntimeProbeCollector
 from .scanner import Scanner
 from .project_rules import AttributionRuleError, validate_rule_payload
+from .rule_packs import (
+    RulePackError,
+    build_rule_pack,
+    preview_rule_pack,
+    rebind_imported_rule,
+    validate_rule_pack,
+)
 from .service_benchmark import ServiceBenchmarkError, run_service_benchmark
 from .service_relationships import build_service_relationships
 from .storage import Storage
@@ -67,8 +74,26 @@ from .workload_matrix import WorkloadMatrixError, WorkloadMatrixManager
 
 
 LOGGER = logging.getLogger("vsg")
-MAX_BODY = 65536
+MAX_BODY = 384 * 1024
 MAX_CONTROL_RESPONSE = 1024 * 1024
+
+
+def _attribution_summary(service: dict[str, Any]) -> dict[str, Any]:
+    """Return only the local, redacted fields needed for correction audit."""
+
+    project = service.get("project") or {}
+    agent = service.get("agent") or {}
+    metadata = service.get("metadata") or {}
+    risk = service.get("risk") or {}
+    return {
+        "project_name": project.get("name"),
+        "agent_provider": agent.get("provider"),
+        "expected": bool(service.get("expected")),
+        "protected": bool(service.get("protected")),
+        "lifecycle_label": metadata.get("historical_lifecycle_label"),
+        "risk_level": risk.get("level"),
+        "attribution_source": metadata.get("attribution_source") or "scanner",
+    }
 
 
 class PrivateRotatingFileHandler(logging.handlers.RotatingFileHandler):
@@ -586,9 +611,35 @@ class VSGHandler(BaseHTTPRequestHandler):
             )
             return
         if parsed.path == "/api/attribution/rules":
+            query = parse_qs(parsed.query)
+            search = query.get("search", [None])[0]
             self._json(
                 HTTPStatus.OK,
-                {"ok": True, "items": self.state.storage.attribution_rules()},
+                {
+                    "ok": True,
+                    "items": self.state.storage.attribution_rules(
+                        search=search if isinstance(search, str) else None
+                    ),
+                    "metrics": self.state.storage.attribution_metrics(30),
+                },
+            )
+            return
+        if parsed.path == "/api/attribution/rules/versions":
+            query = parse_qs(parsed.query)
+            try:
+                rule_id = int(query.get("rule_id", ["0"])[0])
+            except ValueError:
+                rule_id = 0
+            if rule_id <= 0:
+                self._json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": "rule_id 无效"})
+                return
+            self._json(
+                HTTPStatus.OK,
+                {
+                    "ok": True,
+                    "rule_id": rule_id,
+                    "items": self.state.storage.attribution_rule_versions(rule_id),
+                },
             )
             return
         if parsed.path == "/api/model-inventory":
@@ -769,6 +820,152 @@ class VSGHandler(BaseHTTPRequestHandler):
                 self.state.collector.request_refresh()
                 self._json(HTTPStatus.OK, {"ok": True, "id": rule_id, "rule": rule})
                 return
+            if path == "/api/attribution/rules/update":
+                rule_id = int(body.get("rule_id") or 0)
+                if rule_id <= 0 or str(body.get("confirmation") or "") != f"UPDATE RULE {rule_id}":
+                    raise AttributionRuleError(f"确认短语必须是 UPDATE RULE {rule_id}")
+                raw_rule = body.get("rule")
+                if not isinstance(raw_rule, dict):
+                    raise AttributionRuleError("rule 必须是对象")
+                raw_rule = {**raw_rule, "source": "user"}
+                rule = validate_rule_payload(raw_rule, self.state.config.project_roots)
+                updated = self.state.storage.update_attribution_rule(rule_id, rule)
+                if updated is None:
+                    raise AttributionRuleError("归属规则不存在")
+                self.state.storage.add_audit(
+                    "attribution_rule.update",
+                    str(rule_id),
+                    "success",
+                    {"revision": updated.get("revision"), "scope": updated.get("scope")},
+                )
+                self.state.collector.request_refresh()
+                self._json(HTTPStatus.OK, {"ok": True, "rule": updated})
+                return
+            if path == "/api/attribution/rules/status":
+                rule_id = int(body.get("rule_id") or 0)
+                enabled = body.get("enabled")
+                if not isinstance(enabled, bool):
+                    raise AttributionRuleError("enabled 必须是布尔值")
+                verb = "ENABLE" if enabled else "DISABLE"
+                if rule_id <= 0 or str(body.get("confirmation") or "") != f"{verb} RULE {rule_id}":
+                    raise AttributionRuleError(f"确认短语必须是 {verb} RULE {rule_id}")
+                existing = next(
+                    (
+                        item
+                        for item in self.state.storage.attribution_rules()
+                        if int(item.get("id") or 0) == rule_id
+                    ),
+                    None,
+                )
+                if existing is None:
+                    raise AttributionRuleError("归属规则不存在")
+                existing["enabled"] = enabled
+                existing["source"] = "user"
+                rule = validate_rule_payload(existing, self.state.config.project_roots)
+                updated = self.state.storage.update_attribution_rule(
+                    rule_id, rule, action="enable" if enabled else "disable"
+                )
+                self.state.storage.add_audit(
+                    "attribution_rule.status", str(rule_id), "success", {"enabled": enabled}
+                )
+                self.state.collector.request_refresh()
+                self._json(HTTPStatus.OK, {"ok": True, "rule": updated})
+                return
+            if path == "/api/attribution/rules/restore":
+                rule_id = int(body.get("rule_id") or 0)
+                version = int(body.get("version") or 0)
+                phrase = f"RESTORE RULE {rule_id} VERSION {version}"
+                if rule_id <= 0 or version <= 0 or str(body.get("confirmation") or "") != phrase:
+                    raise AttributionRuleError(f"确认短语必须是 {phrase}")
+                restored = self.state.storage.restore_attribution_rule(rule_id, version)
+                if restored is None:
+                    raise AttributionRuleError("归属规则或版本不存在")
+                self.state.storage.add_audit(
+                    "attribution_rule.restore",
+                    str(rule_id),
+                    "success",
+                    {"source_version": version, "revision": restored.get("revision")},
+                )
+                self.state.collector.request_refresh()
+                self._json(HTTPStatus.OK, {"ok": True, "rule": restored})
+                return
+            if path == "/api/attribution/rules/export":
+                if str(body.get("confirmation") or "") != "EXPORT RULES":
+                    raise AttributionRuleError("确认短语必须精确输入 EXPORT RULES")
+                envelope = build_rule_pack(self.state.storage.attribution_rules(), __version__)
+                digest = envelope["integrity"]["canonical_payload_sha256"]
+                self.state.storage.add_audit(
+                    "attribution_rule.export",
+                    "rule_pack",
+                    "success",
+                    {"rules": len(envelope["rules"]), "sha256": digest},
+                )
+                filename = time.strftime("vsg-attribution-rules-%Y%m%d-%H%M%SZ.json", time.gmtime())
+                self._json(
+                    HTTPStatus.OK,
+                    {"ok": True, "filename": filename, "export": envelope},
+                )
+                return
+            if path == "/api/attribution/rules/import/preview":
+                pack = body.get("pack")
+                snapshot = self.state.collector.get_snapshot()
+                preview = preview_rule_pack(
+                    pack,
+                    snapshot.get("services") or [],
+                    self.state.storage.attribution_rules(),
+                )
+                self._json(HTTPStatus.OK, {"ok": True, "preview": preview})
+                return
+            if path == "/api/attribution/rules/import":
+                pack = body.get("pack")
+                validated_pack = validate_rule_pack(pack)
+                bindings = body.get("bindings")
+                if not isinstance(bindings, list) or not bindings:
+                    raise RulePackError("导入至少需要一条明确的服务重绑定")
+                if len(bindings) > len(validated_pack["rules"]):
+                    raise RulePackError("导入重绑定数量超过规则包条目数")
+                phrase = f"IMPORT RULES {len(bindings)} {validated_pack['digest'][:12]}"
+                if str(body.get("confirmation") or "") != phrase:
+                    raise RulePackError(f"确认短语必须是 {phrase}")
+                services = {
+                    str(item.get("id") or ""): item
+                    for item in self.state.collector.get_snapshot().get("services") or []
+                }
+                selected: set[int] = set()
+                imported: list[dict[str, Any]] = []
+                for binding in bindings:
+                    if not isinstance(binding, dict):
+                        raise RulePackError("导入重绑定条目必须是对象")
+                    index = int(binding.get("index") if binding.get("index") is not None else -1)
+                    if index < 0 or index >= len(validated_pack["rules"]) or index in selected:
+                        raise RulePackError("导入规则索引无效或重复")
+                    selected.add(index)
+                    service_id = str(binding.get("service_id") or "")
+                    service = services.get(service_id)
+                    if service is None:
+                        raise RulePackError(f"重绑定目标服务不存在：{service_id[:120]}")
+                    imported.append(
+                        rebind_imported_rule(
+                            validated_pack["rules"][index],
+                            service,
+                            str(binding.get("scope") or "standard"),
+                            self.state.config.project_roots,
+                        )
+                    )
+                rule_ids = self.state.storage.add_attribution_rules(imported)
+                self.state.storage.add_audit(
+                    "attribution_rule.import",
+                    "rule_pack",
+                    "success",
+                    {
+                        "rules": len(rule_ids),
+                        "rule_ids": rule_ids,
+                        "sha256": validated_pack["digest"],
+                    },
+                )
+                self.state.collector.request_refresh()
+                self._json(HTTPStatus.OK, {"ok": True, "rule_ids": rule_ids})
+                return
             if path == "/api/attribution/rules/delete":
                 rule_id = int(body.get("rule_id") or 0)
                 if rule_id <= 0 or str(body.get("confirmation") or "") != f"DELETE RULE {rule_id}":
@@ -782,6 +979,7 @@ class VSGHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/service/attribute":
                 service = self._require_service(body)
+                before_summary = _attribution_summary(service)
                 override = body.get("override") or {}
                 if not isinstance(override, dict):
                     raise AttributionRuleError("override 必须是对象")
@@ -789,8 +987,14 @@ class VSGHandler(BaseHTTPRequestHandler):
                 if not isinstance(inherit_raw, bool):
                     raise AttributionRuleError("inherit_similar 必须是布尔值")
                 inherit_similar = inherit_raw
+                reuse_scope_raw = body.get("reuse_scope")
+                reuse_scope = str(reuse_scope_raw or "").strip().lower()
+                if reuse_scope and reuse_scope not in {"instance", "standard", "strict"}:
+                    raise AttributionRuleError(
+                        "reuse_scope 必须是 instance、standard 或 strict"
+                    )
                 lifecycle_label = str(override.get("lifecycle_label") or "")
-                if inherit_similar and not lifecycle_label:
+                if inherit_similar and not lifecycle_label and not reuse_scope:
                     raise AttributionRuleError("只有历史生命周期标签可以继承到同类进程")
                 signature = str(
                     (service.get("metadata") or {}).get("ownership_signature") or ""
@@ -799,27 +1003,60 @@ class VSGHandler(BaseHTTPRequestHandler):
                     raise AttributionRuleError(
                         "当前进程缺少可执行路径或工作目录，不能创建可继承历史标签"
                     )
-                current_rule = validate_rule_payload(
-                    {
-                        "name": body.get("name")
-                        or f"Attribution · {service.get('display_name') or service.get('fingerprint')}",
-                        "priority": (
-                            1000
-                            if lifecycle_label
-                            else body.get("priority") or 500
-                        ),
-                        "match": {"fingerprint": service.get("fingerprint")},
-                        "override": override,
-                    },
-                    self.state.config.project_roots,
+                command_hash = str(
+                    (service.get("metadata") or {}).get("command_hash") or ""
                 )
-                rules = [current_rule]
-                if inherit_similar:
+                base_name = body.get("name") or (
+                    f"Attribution · {service.get('display_name') or service.get('fingerprint')}"
+                )
+                if reuse_scope:
+                    if reuse_scope == "instance":
+                        reusable_match = {"fingerprint": service.get("fingerprint")}
+                    elif reuse_scope == "standard":
+                        reusable_match = {"ownership_signature": signature}
+                    else:
+                        reusable_match = {
+                            "ownership_signature": signature,
+                            "redacted_command_hash": command_hash,
+                        }
+                    if any(value in (None, "") for value in reusable_match.values()):
+                        raise AttributionRuleError(
+                            f"当前服务缺少创建 {reuse_scope} 规则所需的脱敏证据"
+                        )
+                    rules = [
+                        validate_rule_payload(
+                            {
+                                "name": base_name,
+                                "priority": body.get("priority") or 500,
+                                "source": "user",
+                                "scope": reuse_scope,
+                                "match": reusable_match,
+                                "override": override,
+                            },
+                            self.state.config.project_roots,
+                        )
+                    ]
+                else:
+                    current_rule = validate_rule_payload(
+                        {
+                            "name": base_name,
+                            "priority": 1000 if lifecycle_label else body.get("priority") or 500,
+                            "source": "user",
+                            "scope": "instance",
+                            "match": {"fingerprint": service.get("fingerprint")},
+                            "override": override,
+                        },
+                        self.state.config.project_roots,
+                    )
+                    rules = [current_rule]
+                if inherit_similar and not reuse_scope:
                     rules.append(
                         validate_rule_payload(
                             {
                                 "name": f"Historical lifecycle inheritance · {service.get('display_name') or service.get('fingerprint')}",
                                 "priority": 900,
+                                "source": "user",
+                                "scope": "standard",
                                 "match": {"ownership_signature": signature},
                                 "override": {"lifecycle_label": lifecycle_label},
                             },
@@ -827,6 +1064,40 @@ class VSGHandler(BaseHTTPRequestHandler):
                         )
                     )
                 rule_ids = self.state.storage.add_attribution_rules(rules)
+                metadata = service.get("metadata") or {}
+                matched_rule_ids: list[int] = []
+                for value in metadata.get("attribution_rule_ids") or []:
+                    try:
+                        rule_id_value = int(value)
+                    except (TypeError, ValueError):
+                        continue
+                    if rule_id_value > 0:
+                        matched_rule_ids.append(rule_id_value)
+                after_summary = {**before_summary, "attribution_source": "local_rule"}
+                if override.get("project_name"):
+                    after_summary["project_name"] = str(override["project_name"])
+                if override.get("agent_provider"):
+                    after_summary["agent_provider"] = str(override["agent_provider"])
+                if "expected" in override:
+                    after_summary["expected"] = bool(override["expected"])
+                if "protected" in override:
+                    after_summary["protected"] = bool(before_summary["protected"]) or bool(
+                        override["protected"]
+                    )
+                if lifecycle_label:
+                    after_summary["lifecycle_label"] = lifecycle_label
+                process = service.get("process") or {}
+                episode_key = str(
+                    metadata.get("attribution_episode_key")
+                    or f"legacy:{service.get('fingerprint')}:{process.get('create_time') or 0}"
+                )
+                correction = self.state.storage.record_attribution_correction(
+                    episode_key=episode_key,
+                    service_fingerprint=str(service.get("fingerprint") or ""),
+                    before=before_summary,
+                    after=after_summary,
+                    matched_rule_ids=matched_rule_ids,
+                )
                 self.state.storage.add_audit(
                     "service.attribution_corrected",
                     service["id"],
@@ -834,7 +1105,9 @@ class VSGHandler(BaseHTTPRequestHandler):
                     {
                         "rule_ids": rule_ids,
                         "inherit_similar": inherit_similar,
+                        "reuse_scope": reuse_scope or None,
                         "lifecycle_label": lifecycle_label or None,
+                        "overridden_rule_ids": correction["newly_overridden_rule_ids"],
                     },
                 )
                 self.state.collector.request_refresh()
@@ -844,13 +1117,14 @@ class VSGHandler(BaseHTTPRequestHandler):
                         "ok": True,
                         "id": rule_ids[0],
                         "rule_ids": rule_ids,
-                        "rule": current_rule,
+                        "rule": rules[0],
                         "inherited_rule": rules[1] if len(rules) > 1 else None,
                     },
                 )
                 return
             if path == "/api/service/lifecycle-label/clear":
                 service = self._require_service(body)
+                before_summary = _attribution_summary(service)
                 signature = str(
                     (service.get("metadata") or {}).get("ownership_signature") or ""
                 )
@@ -869,6 +1143,19 @@ class VSGHandler(BaseHTTPRequestHandler):
                     raise AttributionRuleError("当前服务没有可撤销的历史生命周期标签")
                 rewrite = self.state.storage.remove_attribution_override(
                     matching_rule_ids, "lifecycle_label"
+                )
+                metadata = service.get("metadata") or {}
+                process = service.get("process") or {}
+                after_summary = {**before_summary, "lifecycle_label": None}
+                self.state.storage.record_attribution_correction(
+                    episode_key=str(
+                        metadata.get("attribution_episode_key")
+                        or f"legacy:{service.get('fingerprint')}:{process.get('create_time') or 0}"
+                    ),
+                    service_fingerprint=str(service.get("fingerprint") or ""),
+                    before=before_summary,
+                    after=after_summary,
+                    matched_rule_ids=matching_rule_ids,
                 )
                 deleted = rewrite["deleted"]
                 self.state.storage.add_audit(

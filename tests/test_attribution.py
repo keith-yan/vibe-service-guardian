@@ -38,7 +38,7 @@ class AttributionTests(unittest.TestCase):
         ancestor = ProcessSnapshot(pid=29, name="WorkBuddy.exe")
         result = attribute_agent(process, [ancestor], None, [])
         self.assertEqual(result.provider, "WorkBuddy")
-        self.assertEqual(result.kind, "agent")
+        self.assertEqual(result.kind, "managed_child")
 
     def test_workbuddy_listener_attributes_itself(self):
         process = ProcessSnapshot(pid=31, name="WorkBuddy.exe")

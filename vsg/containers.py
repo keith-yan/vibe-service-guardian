@@ -62,6 +62,18 @@ COMPOSE_PROJECT_LABEL = "com.docker.compose.project"
 COMPOSE_SERVICE_LABEL = "com.docker.compose.service"
 COMPOSE_WORKING_DIR_LABEL = "com.docker.compose.project.working_dir"
 COMPOSE_CONFIG_FILES_LABEL = "com.docker.compose.project.config_files"
+DOCKER_INSPECT_FIELDS = (
+    "{{json .Id}}",
+    "{{json .State.Pid}}",
+    "{{json .State.Restarting}}",
+    "{{json .RestartCount}}",
+    "{{json .HostConfig.RestartPolicy.Name}}",
+    f'{{{{json (index .Config.Labels "{COMPOSE_PROJECT_LABEL}")}}}}',
+    f'{{{{json (index .Config.Labels "{COMPOSE_SERVICE_LABEL}")}}}}',
+    f'{{{{json (index .Config.Labels "{COMPOSE_WORKING_DIR_LABEL}")}}}}',
+    f'{{{{json (index .Config.Labels "{COMPOSE_CONFIG_FILES_LABEL}")}}}}',
+)
+DOCKER_INSPECT_FORMAT = "\t".join(DOCKER_INSPECT_FIELDS)
 
 
 def _safe_label(labels: dict[str, Any], key: str, limit: int) -> str | None:
@@ -127,6 +139,47 @@ def _model_runtime(value: str) -> str | None:
     return None
 
 
+def _parse_docker_inspect_allowlist(output: str) -> dict[str, dict[str, Any]]:
+    """Parse only fields explicitly requested from Docker's format template."""
+
+    result: dict[str, dict[str, Any]] = {}
+    for line in output.splitlines():
+        fields = line.split("\t")
+        if len(fields) != len(DOCKER_INSPECT_FIELDS):
+            continue
+        values: list[Any] = []
+        try:
+            for field in fields:
+                values.append(json.loads(field))
+        except json.JSONDecodeError:
+            continue
+        container_id = str(values[0] or "")
+        if not container_id:
+            continue
+        labels = {
+            key: value
+            for key, value in zip(
+                (
+                    COMPOSE_PROJECT_LABEL,
+                    COMPOSE_SERVICE_LABEL,
+                    COMPOSE_WORKING_DIR_LABEL,
+                    COMPOSE_CONFIG_FILES_LABEL,
+                ),
+                values[5:9],
+                strict=True,
+            )
+            if isinstance(value, str)
+        }
+        result[container_id] = {
+            "Id": container_id,
+            "State": {"Pid": values[1], "Restarting": values[2]},
+            "RestartCount": values[3],
+            "HostConfig": {"RestartPolicy": {"Name": values[4]}},
+            "Config": {"Labels": labels},
+        }
+    return result
+
+
 def scan_docker() -> tuple[list[ServiceRecord], dict[str, Any]]:
     executable = shutil.which("docker")
     if not executable:
@@ -149,16 +202,18 @@ def scan_docker() -> tuple[list[ServiceRecord], dict[str, Any]]:
     inspect_by_id: dict[str, dict[str, Any]] = {}
     container_ids = [str(item.get("ID")) for item in rows if item.get("ID")]
     if container_ids:
-        inspect_code, inspect_stdout, _ = _run([executable, "inspect", *container_ids[:64]], timeout=8)
+        inspect_code, inspect_stdout, _ = _run(
+            [
+                executable,
+                "inspect",
+                "--format",
+                DOCKER_INSPECT_FORMAT,
+                *container_ids[:64],
+            ],
+            timeout=8,
+        )
         if inspect_code == 0:
-            try:
-                inspect_values = json.loads(inspect_stdout)
-            except json.JSONDecodeError:
-                inspect_values = []
-            if isinstance(inspect_values, list):
-                for value in inspect_values:
-                    if isinstance(value, dict) and value.get("Id"):
-                        inspect_by_id[str(value["Id"])] = value
+            inspect_by_id = _parse_docker_inspect_allowlist(inspect_stdout)
 
     services: list[ServiceRecord] = []
     for item in rows:
@@ -267,7 +322,11 @@ def scan_docker() -> tuple[list[ServiceRecord], dict[str, Any]]:
                 },
             )
         )
-    return services, {"status": "ok", "message": f"检测到 {len(services)} 个运行中容器"}
+    return services, {
+        "status": "ok",
+        "message": f"检测到 {len(services)} 个运行中容器（仅采集固定白名单元数据）",
+        "metadata_policy": "fixed_allowlist_no_environment",
+    }
 
 
 PID_RE = re.compile(r"pid=(\d+)")

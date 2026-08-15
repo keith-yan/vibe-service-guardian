@@ -1,6 +1,21 @@
 # 本地验证记录
 
-本文保留 Vibe Service Guardian 0.4.0–0.8.3 的既有验证证据，并追加 0.8.4 P0 在本地功能分支的可复核结果。本轮没有提交、推送、发布 Release 或提交 OpenAI 申请。
+本文保留 Vibe Service Guardian 0.4.0–0.8.4 的既有验证证据，并追加 0.8.5 P2-A 在本地功能分支的可复核结果。本轮没有提交、推送、发布 Release 或提交 OpenAI 申请。
+
+## 0.8.5 P2-A 归属进化验收（2026-08-15）
+
+- SQLite schema version 6 专项覆盖 v5 备份迁移、旧规则范围推断和首版快照；规则按 `instance > strict > standard > custom > legacy` 具体度、最新用户意图、优先级和 ID 确定性决胜。每条规则最多保留最近 5 版，回滚会创建新修订而不是改写历史。
+- 服务纠正支持当前实例、标准复用和严格复用三种范围。命中和纠正按来源、服务指纹、启动时间与可见托管实体组成的脱敏 episode 去重；重复刷新不增加命中，同一 episode 多次纠正只计一次规则覆盖，两个不同 episode 覆盖后标记建议复核。
+- 规则包覆盖空规则拒绝、256 KiB/500 条上限、canonical SHA-256、篡改拒绝、循环/异常深度拒绝、路径/完整命令/备注字段剥离、候选与冲突预览，以及经当前服务和范围显式重绑定后的真实 API 写入。没有后台同步或自动跨机匹配。
+- Agent/IDE 可见父链子进程继承 `managed_child` 归属并保持停止保护，不进入普通遗留评分。Docker 测试断言只调用固定 9 字段 `inspect --format` 模板，不请求 `.Config.Env`、完整标签、挂载或 Compose 文件正文。
+- 完整 unittest 共 210 项：209 通过，1 项因 Windows 不适用 POSIX mode-bit 断言而跳过；构建内完整回归用时 29.074 秒。0.8.5 专项 9 项全部通过；Ruff E4/E7/E9/F/B、两个前端 JavaScript 语法检查和 `git diff --check` 通过。
+- 本机浏览器只读 UI smoke 验证事件与模型资产工作区、规则统计/搜索/导出/导入入口、导入重绑定弹窗、归属纠正三档复用范围和中英文切换；英文生命周期选项均完整翻译，控制台 warning/error 为空。检查未提交表单或写入规则，隔离临时数据已移入回收站。
+- 20 份哈希锁验证通过，公开目录审计无发现，Bandit 中/高风险门禁为 0。`requirements.txt`、Windows、macOS、Linux 四组固定依赖在 2026-08-15 的 `pip-audit` 均返回 `No known vulnerabilities found`；该结论只代表当次漏洞数据库。
+- Windows 0.8.5 未签名 EXE 在全新临时数据目录完成原生 smoke：版本 0.8.5、仅绑定 `127.0.0.1`、Host/Origin/随机令牌拒绝、CSP、17 个离线模型候选、33 个服务评估、155 个关系节点、136 条边、5 条本机依赖、2 个 GPU、健康状态 `healthy`、0 个采集错误和优雅退出均通过。服务与关系数量是动态本机样本，不作为固定断言。
+- Windows ZIP 通过 sidecar、单根目录、路径穿越/符号链接/体积限制、运行数据排除、43 个条目、CRLF/ASCII 启动脚本、许可证、SPDX 2.3 SBOM 和 0.8.5 文档契约验证。最终 SHA-256 只以归档旁同名 `.sha256` 为准，避免文档与归档形成哈希自引用。
+- 本轮没有停止用户服务、压测真实模型、读取目标进程/容器环境变量或执行 Docker/systemd/launchd 控制命令。macOS/Linux、systemd/launchd 原生证据和真实 Hermes/OpenCode 版本矩阵顺延到 0.8.6 P2-B，当前 Windows 结果不能替代。
+
+上线结论与剩余阻断项见 [PRODUCTION-READINESS-0.8.5.md](PRODUCTION-READINESS-0.8.5.md)。
 
 ## 0.8.4 P0 收敛验收（2026-08-14）
 

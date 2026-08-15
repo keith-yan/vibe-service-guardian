@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import secrets
 import sqlite3
 import threading
@@ -10,10 +11,12 @@ from typing import Any, Iterable
 
 from .models import ServiceRecord
 from .privacy import ensure_private_directory, harden_private_file
+from .project_rules import infer_rule_scope, rule_specificity
 
 
 MAX_BENCHMARK_DETAILS_CHARS = 30_000
-CURRENT_SCHEMA_VERSION = 5
+CURRENT_SCHEMA_VERSION = 6
+MAX_ATTRIBUTION_RULE_VERSIONS = 5
 
 
 class StorageError(RuntimeError):
@@ -69,6 +72,14 @@ def _bounded_benchmark_details(
         else:
             compact[f"{key}_omitted"] = True
     return json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
+
+
+def _canonical_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _snapshot_sha256(value: dict[str, Any]) -> str:
+    return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
 
 
 SCHEMA = """
@@ -240,11 +251,67 @@ CREATE TABLE IF NOT EXISTS attribution_rules (
     name TEXT NOT NULL,
     priority INTEGER NOT NULL DEFAULT 100,
     enabled INTEGER NOT NULL DEFAULT 1,
+    source TEXT NOT NULL DEFAULT 'user',
+    scope TEXT NOT NULL DEFAULT 'legacy',
+    specificity INTEGER NOT NULL DEFAULT 0,
+    revision INTEGER NOT NULL DEFAULT 1,
+    hit_count INTEGER NOT NULL DEFAULT 0,
+    last_hit_at REAL,
+    override_count INTEGER NOT NULL DEFAULT 0,
+    last_override_at REAL,
+    needs_review INTEGER NOT NULL DEFAULT 0,
     match_json TEXT NOT NULL,
     override_json TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS attribution_rule_priority
     ON attribution_rules(enabled, priority DESC, id DESC);
+CREATE TABLE IF NOT EXISTS attribution_rule_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    rule_id INTEGER NOT NULL,
+    version INTEGER NOT NULL,
+    created_at REAL NOT NULL,
+    action TEXT NOT NULL,
+    snapshot_json TEXT NOT NULL,
+    snapshot_sha256 TEXT NOT NULL,
+    UNIQUE(rule_id, version)
+);
+CREATE INDEX IF NOT EXISTS attribution_rule_version_recent
+    ON attribution_rule_versions(rule_id, version DESC);
+CREATE TABLE IF NOT EXISTS attribution_episodes (
+    episode_key TEXT PRIMARY KEY,
+    first_seen REAL NOT NULL,
+    last_seen REAL NOT NULL,
+    source TEXT NOT NULL,
+    service_fingerprint TEXT NOT NULL,
+    initial_json TEXT NOT NULL,
+    winner_rule_id INTEGER,
+    corrected INTEGER NOT NULL DEFAULT 0,
+    correction_count INTEGER NOT NULL DEFAULT 0,
+    last_correction_at REAL
+);
+CREATE INDEX IF NOT EXISTS attribution_episode_recent
+    ON attribution_episodes(first_seen DESC);
+CREATE TABLE IF NOT EXISTS attribution_rule_hits (
+    rule_id INTEGER NOT NULL,
+    episode_key TEXT NOT NULL,
+    first_hit_at REAL NOT NULL,
+    last_hit_at REAL NOT NULL,
+    overridden_at REAL,
+    PRIMARY KEY(rule_id, episode_key)
+);
+CREATE INDEX IF NOT EXISTS attribution_rule_hit_recent
+    ON attribution_rule_hits(rule_id, last_hit_at DESC);
+CREATE TABLE IF NOT EXISTS attribution_corrections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    corrected_at REAL NOT NULL,
+    episode_key TEXT NOT NULL,
+    service_fingerprint TEXT NOT NULL,
+    before_json TEXT NOT NULL,
+    after_json TEXT NOT NULL,
+    rule_ids_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS attribution_correction_recent
+    ON attribution_corrections(corrected_at DESC);
 CREATE TABLE IF NOT EXISTS timeline_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     first_seen REAL NOT NULL,
@@ -401,8 +468,71 @@ class Storage:
             ("service_benchmarks", "aggregate_generation_tps", "REAL"),
             ("service_benchmarks", "ttft_p95_seconds", "REAL"),
             ("service_benchmarks", "sample_count", "INTEGER"),
+            ("attribution_rules", "source", "TEXT NOT NULL DEFAULT 'user'"),
+            ("attribution_rules", "scope", "TEXT NOT NULL DEFAULT 'legacy'"),
+            ("attribution_rules", "specificity", "INTEGER NOT NULL DEFAULT 0"),
+            ("attribution_rules", "revision", "INTEGER NOT NULL DEFAULT 1"),
+            ("attribution_rules", "hit_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("attribution_rules", "last_hit_at", "REAL"),
+            ("attribution_rules", "override_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("attribution_rules", "last_override_at", "REAL"),
+            ("attribution_rules", "needs_review", "INTEGER NOT NULL DEFAULT 0"),
         ):
             self._ensure_column(table, column, definition)
+
+    def _migrate_attribution_rules_v6(self) -> None:
+        self._execute_schema()
+        self._ensure_additive_columns()
+        self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at REAL NOT NULL
+            )
+            """
+        )
+        rows = self._connection.execute("SELECT * FROM attribution_rules").fetchall()
+        for row in rows:
+            try:
+                match = json.loads(row["match_json"] or "{}")
+            except (json.JSONDecodeError, TypeError):
+                match = {}
+            scope = infer_rule_scope(match)
+            specificity = rule_specificity(match, scope)
+            self._connection.execute(
+                """
+                UPDATE attribution_rules
+                SET source = CASE WHEN source = 'user' THEN 'migration' ELSE source END,
+                    scope = ?, specificity = ?
+                WHERE id = ?
+                """,
+                (scope, specificity, int(row["id"])),
+            )
+        self._connection.execute("DROP INDEX IF EXISTS attribution_rule_priority")
+        self._connection.execute(
+            """
+            CREATE INDEX attribution_rule_priority
+            ON attribution_rules(
+                enabled, specificity DESC, updated_at DESC, priority DESC, id DESC
+            )
+            """
+        )
+        for row in self._connection.execute("SELECT * FROM attribution_rules").fetchall():
+            snapshot = self._rule_snapshot(dict(row))
+            self._connection.execute(
+                """
+                INSERT OR IGNORE INTO attribution_rule_versions(
+                    rule_id, version, created_at, action, snapshot_json, snapshot_sha256
+                ) VALUES(?, ?, ?, 'migration', ?, ?)
+                """,
+                (
+                    int(row["id"]),
+                    int(row["revision"] or 1),
+                    time.time(),
+                    _canonical_json(snapshot),
+                    _snapshot_sha256(snapshot),
+                ),
+            )
 
     def _apply_migration(self, target_version: int) -> None:
         if target_version == 1:
@@ -447,6 +577,9 @@ class Storage:
                 )
                 """
             )
+            return
+        if target_version == 6:
+            self._migrate_attribution_rules_v6()
             return
         raise StorageVersionError(f"没有数据库版本 {target_version} 的迁移程序")
 
@@ -892,23 +1025,128 @@ class Storage:
             result.append(item)
         return result
 
-    def attribution_rules(self, *, enabled_only: bool = False) -> list[dict[str, Any]]:
-        query = "SELECT * FROM attribution_rules"
+    @staticmethod
+    def _decode_rule_row(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+        item = dict(row)
+        for source, target in (("match_json", "match"), ("override_json", "override")):
+            if source not in item:
+                item.setdefault(target, {})
+                continue
+            try:
+                item[target] = json.loads(item.pop(source))
+            except (json.JSONDecodeError, TypeError, KeyError):
+                item[target] = {}
+        item["enabled"] = bool(item.get("enabled"))
+        item["needs_review"] = bool(item.get("needs_review"))
+        return item
+
+    @classmethod
+    def _rule_snapshot(cls, row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+        item = cls._decode_rule_row(row)
+        return {
+            "name": str(item.get("name") or "本地归属规则")[:160],
+            "priority": int(item.get("priority") or 100),
+            "enabled": bool(item.get("enabled", True)),
+            "source": str(item.get("source") or "user")[:20],
+            "scope": str(item.get("scope") or "legacy")[:20],
+            "specificity": int(item.get("specificity") or 0),
+            "revision": int(item.get("revision") or 1),
+            "match": item.get("match") or {},
+            "override": item.get("override") or {},
+        }
+
+    def _insert_rule_version_locked(self, rule_id: int, action: str, created_at: float) -> None:
+        row = self._connection.execute(
+            "SELECT * FROM attribution_rules WHERE id = ?", (int(rule_id),)
+        ).fetchone()
+        if row is None:
+            return
+        snapshot = self._rule_snapshot(row)
+        version = int(snapshot["revision"])
+        self._connection.execute(
+            """
+            INSERT OR REPLACE INTO attribution_rule_versions(
+                rule_id, version, created_at, action, snapshot_json, snapshot_sha256
+            ) VALUES(?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(rule_id),
+                version,
+                created_at,
+                str(action or "update")[:40],
+                _canonical_json(snapshot),
+                _snapshot_sha256(snapshot),
+            ),
+        )
+        self._connection.execute(
+            """
+            DELETE FROM attribution_rule_versions
+            WHERE id IN (
+                SELECT id FROM attribution_rule_versions
+                WHERE rule_id = ? ORDER BY version DESC LIMIT -1 OFFSET ?
+            )
+            """,
+            (int(rule_id), MAX_ATTRIBUTION_RULE_VERSIONS),
+        )
+
+    def attribution_rules(
+        self, *, enabled_only: bool = False, search: str | None = None
+    ) -> list[dict[str, Any]]:
+        query = """
+            SELECT r.*,
+                   (SELECT COUNT(*) FROM attribution_rule_versions v WHERE v.rule_id = r.id)
+                       AS version_count
+            FROM attribution_rules r
+        """
         if enabled_only:
-            query += " WHERE enabled = 1"
-        query += " ORDER BY priority DESC, id DESC"
+            query += " WHERE r.enabled = 1"
+        query += " ORDER BY r.specificity DESC, r.updated_at DESC, r.priority DESC, r.id DESC"
         with self._lock:
             rows = self._connection.execute(query).fetchall()
+        result = [self._decode_rule_row(row) for row in rows]
+        needle = str(search or "").strip().casefold()
+        if needle:
+            result = [
+                item
+                for item in result
+                if needle
+                in " ".join(
+                    (
+                        str(item.get("name") or ""),
+                        str((item.get("override") or {}).get("project_name") or ""),
+                        str((item.get("override") or {}).get("service_name") or ""),
+                        str((item.get("override") or {}).get("agent_provider") or ""),
+                        str((item.get("override") or {}).get("note") or ""),
+                    )
+                ).casefold()
+            ]
+        return result
+
+    def attribution_rule_versions(self, rule_id: int) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._connection.execute(
+                """
+                SELECT version, created_at, action, snapshot_json, snapshot_sha256
+                FROM attribution_rule_versions
+                WHERE rule_id = ? ORDER BY version DESC
+                """,
+                (int(rule_id),),
+            ).fetchall()
         result: list[dict[str, Any]] = []
         for row in rows:
-            item = dict(row)
-            for source, target in (("match_json", "match"), ("override_json", "override")):
-                try:
-                    item[target] = json.loads(item.pop(source))
-                except (json.JSONDecodeError, TypeError):
-                    item[target] = {}
-            item["enabled"] = bool(item["enabled"])
-            result.append(item)
+            try:
+                snapshot = json.loads(row["snapshot_json"] or "{}")
+            except (json.JSONDecodeError, TypeError):
+                snapshot = {}
+            result.append(
+                {
+                    "version": int(row["version"]),
+                    "created_at": float(row["created_at"]),
+                    "action": str(row["action"]),
+                    "snapshot": snapshot,
+                    "snapshot_sha256": str(row["snapshot_sha256"]),
+                }
+            )
         return result
 
     def add_attribution_rule(self, rule: dict[str, Any]) -> int:
@@ -924,8 +1162,9 @@ class Storage:
                 cursor = self._connection.execute(
                     """
                     INSERT INTO attribution_rules(
-                        created_at, updated_at, name, priority, enabled, match_json, override_json
-                    ) VALUES(?, ?, ?, ?, ?, ?, ?)
+                        created_at, updated_at, name, priority, enabled, source, scope,
+                        specificity, revision, match_json, override_json
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
                     """,
                     (
                         now,
@@ -933,15 +1172,97 @@ class Storage:
                         str(rule["name"])[:160],
                         int(rule.get("priority") or 100),
                         int(bool(rule.get("enabled", True))),
+                        str(rule.get("source") or "user")[:20],
+                        str(rule.get("scope") or infer_rule_scope(rule.get("match") or {}))[:20],
+                        int(
+                            rule.get("specificity")
+                            if rule.get("specificity") is not None
+                            else rule_specificity(
+                                rule.get("match") or {}, str(rule.get("scope") or "") or None
+                            )
+                        ),
                         json.dumps(rule.get("match") or {}, ensure_ascii=False, sort_keys=True)[:4000],
                         json.dumps(rule.get("override") or {}, ensure_ascii=False, sort_keys=True)[:4000],
                     ),
                 )
-                identifiers.append(int(cursor.lastrowid))
+                rule_id = int(cursor.lastrowid)
+                self._insert_rule_version_locked(rule_id, "create", now)
+                identifiers.append(rule_id)
         return identifiers
+
+    def update_attribution_rule(
+        self, rule_id: int, rule: dict[str, Any], *, action: str = "update"
+    ) -> dict[str, Any] | None:
+        now = time.time()
+        with self._lock, self._connection:
+            current = self._connection.execute(
+                "SELECT revision FROM attribution_rules WHERE id = ?", (int(rule_id),)
+            ).fetchone()
+            if current is None:
+                return None
+            revision = int(current["revision"] or 1) + 1
+            match = rule.get("match") or {}
+            scope = str(rule.get("scope") or infer_rule_scope(match))[:20]
+            specificity = int(
+                rule.get("specificity")
+                if rule.get("specificity") is not None
+                else rule_specificity(match, scope)
+            )
+            self._connection.execute(
+                """
+                UPDATE attribution_rules
+                SET updated_at = ?, name = ?, priority = ?, enabled = ?, source = ?,
+                    scope = ?, specificity = ?, revision = ?, needs_review = 0,
+                    match_json = ?, override_json = ?
+                WHERE id = ?
+                """,
+                (
+                    now,
+                    str(rule["name"])[:160],
+                    int(rule.get("priority") or 100),
+                    int(bool(rule.get("enabled", True))),
+                    str(rule.get("source") or "user")[:20],
+                    scope,
+                    specificity,
+                    revision,
+                    _canonical_json(match)[:4000],
+                    _canonical_json(rule.get("override") or {})[:4000],
+                    int(rule_id),
+                ),
+            )
+            self._insert_rule_version_locked(int(rule_id), action, now)
+            row = self._connection.execute(
+                "SELECT * FROM attribution_rules WHERE id = ?", (int(rule_id),)
+            ).fetchone()
+        return self._decode_rule_row(row) if row else None
+
+    def restore_attribution_rule(self, rule_id: int, version: int) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._connection.execute(
+                """
+                SELECT snapshot_json FROM attribution_rule_versions
+                WHERE rule_id = ? AND version = ?
+                """,
+                (int(rule_id), int(version)),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            snapshot = json.loads(row["snapshot_json"] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            return None
+        return self.update_attribution_rule(
+            int(rule_id), snapshot, action=f"restore:{int(version)}"
+        )
 
     def delete_attribution_rule(self, rule_id: int) -> bool:
         with self._lock, self._connection:
+            self._connection.execute(
+                "DELETE FROM attribution_rule_versions WHERE rule_id = ?", (int(rule_id),)
+            )
+            self._connection.execute(
+                "DELETE FROM attribution_rule_hits WHERE rule_id = ?", (int(rule_id),)
+            )
             cursor = self._connection.execute(
                 "DELETE FROM attribution_rules WHERE id = ?", (int(rule_id),)
             )
@@ -954,50 +1275,216 @@ class Storage:
 
         if override_key not in {"lifecycle_label"}:
             raise ValueError("不允许移除该归属覆盖字段")
-        identifiers = sorted({int(item) for item in rule_ids if int(item) > 0})
+        normalized_identifiers: set[int] = set()
+        for item in rule_ids:
+            try:
+                identifier = int(item)
+            except (TypeError, ValueError):
+                continue
+            if identifier > 0:
+                normalized_identifiers.add(identifier)
+        identifiers = sorted(normalized_identifiers)
         if not identifiers:
             return {"deleted": [], "recreated": []}
         deleted: list[int] = []
         recreated: list[int] = []
-        now = time.time()
-        with self._lock, self._connection:
-            for rule_id in identifiers:
+        for rule_id in identifiers:
+            with self._lock:
                 row = self._connection.execute(
                     "SELECT * FROM attribution_rules WHERE id = ?", (rule_id,)
                 ).fetchone()
-                if not row:
-                    continue
-                try:
-                    override = json.loads(row["override_json"] or "{}")
-                except (json.JSONDecodeError, TypeError):
-                    override = {}
-                if override_key not in override:
-                    continue
-                override.pop(override_key, None)
-                self._connection.execute(
-                    "DELETE FROM attribution_rules WHERE id = ?", (rule_id,)
-                )
-                deleted.append(rule_id)
-                if override:
-                    cursor = self._connection.execute(
-                        """
-                        INSERT INTO attribution_rules(
-                            created_at, updated_at, name, priority, enabled,
-                            match_json, override_json
-                        ) VALUES(?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            float(row["created_at"]),
-                            now,
-                            str(row["name"])[:160],
-                            int(row["priority"]),
-                            int(row["enabled"]),
-                            str(row["match_json"])[:4000],
-                            json.dumps(override, ensure_ascii=False, sort_keys=True)[:4000],
-                        ),
-                    )
-                    recreated.append(int(cursor.lastrowid))
+            if not row:
+                continue
+            rule = self._decode_rule_row(row)
+            override = rule.get("override") or {}
+            if override_key not in override:
+                continue
+            override.pop(override_key, None)
+            deleted.append(rule_id)
+            if not override:
+                self.delete_attribution_rule(rule_id)
+                continue
+            rule["override"] = override
+            updated = self.update_attribution_rule(
+                rule_id, rule, action=f"remove:{override_key}"
+            )
+            if updated:
+                recreated.append(rule_id)
         return {"deleted": deleted, "recreated": recreated}
+
+    def record_attribution_evaluations(
+        self, evaluations: Iterable[dict[str, Any]], *, observed_at: float | None = None
+    ) -> None:
+        now = float(observed_at or time.time())
+        with self._lock, self._connection:
+            for evaluation in evaluations:
+                episode_key = str(evaluation.get("episode_key") or "")[:96]
+                fingerprint = str(evaluation.get("service_fingerprint") or "")[:96]
+                source = str(evaluation.get("source") or "unknown")[:40]
+                if not episode_key or not fingerprint:
+                    continue
+                initial = evaluation.get("initial") or {}
+                initial_json = _canonical_json(initial)
+                if len(initial_json.encode("utf-8")) > 4000:
+                    initial_json = _canonical_json({"truncated": True})
+                winner = evaluation.get("winner_rule_id")
+                try:
+                    winner_id = int(winner) if winner not in (None, "") else None
+                except (TypeError, ValueError):
+                    winner_id = None
+                self._connection.execute(
+                    """
+                    INSERT INTO attribution_episodes(
+                        episode_key, first_seen, last_seen, source, service_fingerprint,
+                        initial_json, winner_rule_id
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(episode_key) DO UPDATE SET
+                        last_seen = excluded.last_seen,
+                        winner_rule_id = excluded.winner_rule_id
+                    """,
+                    (episode_key, now, now, source, fingerprint, initial_json, winner_id),
+                )
+                if winner_id is None:
+                    continue
+                cursor = self._connection.execute(
+                    """
+                    INSERT OR IGNORE INTO attribution_rule_hits(
+                        rule_id, episode_key, first_hit_at, last_hit_at
+                    ) VALUES(?, ?, ?, ?)
+                    """,
+                    (winner_id, episode_key, now, now),
+                )
+                if cursor.rowcount:
+                    self._connection.execute(
+                        """
+                        UPDATE attribution_rules
+                        SET hit_count = hit_count + 1, last_hit_at = ? WHERE id = ?
+                        """,
+                        (now, winner_id),
+                    )
+                else:
+                    self._connection.execute(
+                        """
+                        UPDATE attribution_rule_hits SET last_hit_at = ?
+                        WHERE rule_id = ? AND episode_key = ?
+                        """,
+                        (now, winner_id, episode_key),
+                    )
+                    self._connection.execute(
+                        "UPDATE attribution_rules SET last_hit_at = ? WHERE id = ?",
+                        (now, winner_id),
+                    )
+
+    def record_attribution_correction(
+        self,
+        *,
+        episode_key: str,
+        service_fingerprint: str,
+        before: dict[str, Any],
+        after: dict[str, Any],
+        matched_rule_ids: Iterable[int] = (),
+        corrected_at: float | None = None,
+    ) -> dict[str, Any]:
+        now = float(corrected_at or time.time())
+        key = str(episode_key or "")[:96]
+        fingerprint = str(service_fingerprint or "")[:96]
+        if not key or not fingerprint:
+            raise ValueError("归属纠正缺少有效 episode")
+        normalized_rule_ids: set[int] = set()
+        for item in matched_rule_ids:
+            try:
+                identifier = int(item)
+            except (TypeError, ValueError):
+                continue
+            if identifier > 0:
+                normalized_rule_ids.add(identifier)
+        rule_ids = sorted(normalized_rule_ids)
+        before_json = _canonical_json(before)
+        after_json = _canonical_json(after)
+        if len(before_json.encode("utf-8")) > 4000 or len(after_json.encode("utf-8")) > 4000:
+            raise ValueError("归属纠正摘要超过本地审计上限")
+        newly_overridden: list[int] = []
+        with self._lock, self._connection:
+            self._connection.execute(
+                """
+                INSERT INTO attribution_episodes(
+                    episode_key, first_seen, last_seen, source, service_fingerprint,
+                    initial_json, corrected, correction_count, last_correction_at
+                ) VALUES(?, ?, ?, 'unknown', ?, ?, 1, 1, ?)
+                ON CONFLICT(episode_key) DO UPDATE SET
+                    last_seen = excluded.last_seen,
+                    corrected = 1,
+                    correction_count = attribution_episodes.correction_count + 1,
+                    last_correction_at = excluded.last_correction_at
+                """,
+                (key, now, now, fingerprint, before_json, now),
+            )
+            self._connection.execute(
+                """
+                INSERT INTO attribution_corrections(
+                    corrected_at, episode_key, service_fingerprint,
+                    before_json, after_json, rule_ids_json
+                ) VALUES(?, ?, ?, ?, ?, ?)
+                """,
+                (now, key, fingerprint, before_json, after_json, _canonical_json(rule_ids)),
+            )
+            for rule_id in rule_ids:
+                cursor = self._connection.execute(
+                    """
+                    UPDATE attribution_rule_hits SET overridden_at = ?
+                    WHERE rule_id = ? AND episode_key = ? AND overridden_at IS NULL
+                    """,
+                    (now, rule_id, key),
+                )
+                if not cursor.rowcount:
+                    continue
+                newly_overridden.append(rule_id)
+                self._connection.execute(
+                    """
+                    UPDATE attribution_rules
+                    SET override_count = override_count + 1,
+                        last_override_at = ?,
+                        needs_review = CASE WHEN override_count + 1 >= 2 THEN 1 ELSE needs_review END
+                    WHERE id = ?
+                    """,
+                    (now, rule_id),
+                )
+        return {
+            "episode_key": key,
+            "rule_ids": rule_ids,
+            "newly_overridden_rule_ids": newly_overridden,
+        }
+
+    def attribution_metrics(self, days: int = 30) -> dict[str, Any]:
+        window_days = max(1, min(int(days), 365))
+        cutoff = time.time() - window_days * 86400
+        with self._lock:
+            episode = self._connection.execute(
+                """
+                SELECT COUNT(*) AS total,
+                       SUM(CASE WHEN corrected = 1 THEN 1 ELSE 0 END) AS corrected
+                FROM attribution_episodes WHERE first_seen >= ?
+                """,
+                (cutoff,),
+            ).fetchone()
+            correction_events = self._connection.execute(
+                "SELECT COUNT(*) FROM attribution_corrections WHERE corrected_at >= ?",
+                (cutoff,),
+            ).fetchone()[0]
+            needs_review = self._connection.execute(
+                "SELECT COUNT(*) FROM attribution_rules WHERE needs_review = 1"
+            ).fetchone()[0]
+        total = int(episode["total"] or 0) if episode else 0
+        corrected = int(episode["corrected"] or 0) if episode else 0
+        return {
+            "window_days": window_days,
+            "episodes": total,
+            "corrected_episodes": corrected,
+            "correction_events": int(correction_events or 0),
+            "correction_rate": round(corrected / total, 4) if total else None,
+            "rules_needing_review": int(needs_review or 0),
+            "denominator": "unique_service_episodes",
+        }
 
     def add_timeline_event(self, event: dict[str, Any], dedup_seconds: float = 60.0) -> int:
         observed_at = float(event.get("observed_at") or time.time())
@@ -1890,3 +2377,18 @@ class Storage:
             self._connection.execute("DELETE FROM telemetry_samples WHERE observed_at < ?", (cutoff,))
             self._connection.execute("DELETE FROM model_inventory_scans WHERE created_at < ?", (cutoff,))
             self._connection.execute("DELETE FROM impact_feedback WHERE updated_at < ?", (cutoff,))
+            self._connection.execute(
+                """
+                DELETE FROM attribution_rule_hits
+                WHERE episode_key IN (
+                    SELECT episode_key FROM attribution_episodes WHERE last_seen < ?
+                )
+                """,
+                (cutoff,),
+            )
+            self._connection.execute(
+                "DELETE FROM attribution_episodes WHERE last_seen < ?", (cutoff,)
+            )
+            self._connection.execute(
+                "DELETE FROM attribution_corrections WHERE corrected_at < ?", (cutoff,)
+            )
