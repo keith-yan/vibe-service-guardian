@@ -15,6 +15,20 @@ class VersionTests(unittest.TestCase):
         assert match is not None
         self.assertEqual(match.group(1), __version__)
 
+    def test_release_version_is_supported_by_all_packaging_scripts(self):
+        root = Path(__file__).resolve().parents[1]
+        self.assertRegex(__version__, r"^\d+\.\d+\.\d+(?:\.\d+)?$")
+        four_part_markers = {
+            "scripts/Build-Portable.ps1": r"(?:\.\d+)?",
+            "scripts/Validate-Windows.ps1": r"(?:\.\d+)?",
+            "scripts/Build-Portable-Linux.sh": r"(\.[0-9]+)?",
+            "scripts/Build-Portable-macOS.sh": r"(\.[0-9]+)?",
+        }
+        for relative_path, marker in four_part_markers.items():
+            with self.subTest(script=relative_path):
+                content = (root / relative_path).read_text(encoding="utf-8")
+                self.assertIn(marker, content)
+
 
 if __name__ == "__main__":
     unittest.main()

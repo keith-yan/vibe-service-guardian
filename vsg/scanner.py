@@ -51,6 +51,22 @@ INLINE_SECRET_RE = re.compile(
 )
 
 
+def _is_vsg_process(process: ProcessSnapshot) -> bool:
+    """Identify VSG itself without relying on a particular packaging layout."""
+
+    binary_identity = " ".join([process.name or "", process.exe or ""]).casefold()
+    compact = re.sub(r"[^a-z0-9]+", "", binary_identity)
+    if "vibeserviceguardian" in compact:
+        return True
+    arguments = [str(value).replace("\\", "/").casefold() for value in process.cmdline or []]
+    identity = " ".join(arguments)
+    return bool(
+        re.search(r"(?:^|\s)-m\s+vsg(?:\s|$)", identity)
+        or any(value in {"vsg.app", "vsg/__main__.py"} for value in arguments)
+        or any(value.endswith("/vsg/__main__.py") for value in arguments)
+    )
+
+
 def _normalized_identity_path(value: str | None) -> str:
     """Normalize an already-visible local path for a one-way ownership signature."""
 
@@ -350,6 +366,7 @@ class Scanner:
                 None,
             )
             runtime = detect_runtime(process)
+            is_vsg_instance = _is_vsg_process(process)
             windows_services = service_map.get(pid, [])
             source = "windows_service" if windows_services else "agent" if pid in agent_pids else "host"
             command_hash = redacted_command_hash(process.cmdline)
@@ -369,6 +386,7 @@ class Scanner:
                 or process.name.lower() in set(self.config.protected_names)
                 or source == "agent"
                 or managed_agent_child
+                or is_vsg_instance
             )
             if pid in {os.getpid(), os.getppid()}:
                 protected = True
@@ -420,6 +438,8 @@ class Scanner:
                         agent_parent[1].provider if agent_parent and agent_parent[1] else None
                     ),
                     "model_runtime": runtime in MODEL_SERVER_RUNTIMES,
+                    "vsg_instance": is_vsg_instance,
+                    "vsg_current_instance": pid == os.getpid(),
                     "auto_restart": None,
                     "lifecycle_manager": (
                         "Agent/IDE parent"

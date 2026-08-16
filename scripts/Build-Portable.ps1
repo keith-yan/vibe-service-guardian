@@ -32,7 +32,7 @@ if ($LASTEXITCODE -ne 0) { throw "Test suite failed: $LASTEXITCODE" }
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller build failed: $LASTEXITCODE" }
 $Version = (& $VenvPython -c 'from vsg import __version__; print(__version__)').Trim()
 if ($LASTEXITCODE -ne 0) { throw "Version lookup failed: $LASTEXITCODE" }
-if ($Version -notmatch '^\d+\.\d+\.\d+$') {
+if ($Version -notmatch '^\d+\.\d+\.\d+(?:\.\d+)?$') {
     throw "Invalid application version: $Version"
 }
 & powershell.exe -NoProfile -ExecutionPolicy Bypass `
@@ -87,6 +87,7 @@ Copy-Item -LiteralPath (Join-Path $ProjectRoot 'docs\V0.8.4-P0-CLOSURE.md') -Des
 Copy-Item -LiteralPath (Join-Path $ProjectRoot 'docs\PRODUCTION-READINESS-0.8.4.md') -Destination $PortableDocs
 Copy-Item -LiteralPath (Join-Path $ProjectRoot 'docs\V0.8.5-P2-A.md') -Destination $PortableDocs
 Copy-Item -LiteralPath (Join-Path $ProjectRoot 'docs\PRODUCTION-READINESS-0.8.5.md') -Destination $PortableDocs
+Copy-Item -LiteralPath (Join-Path $ProjectRoot 'docs\V0.8.5.1-DAILY-USE.md') -Destination $PortableDocs
 Copy-Item -LiteralPath (Join-Path $ProjectRoot 'docs\VALIDATION.md') -Destination $PortableDocs
 Copy-Item -LiteralPath (Join-Path $ProjectRoot 'docs\EVIDENCE-REGISTER.md') -Destination $PortableDocs
 $PortableCaseStudies = Join-Path $PortableDocs 'case-studies'

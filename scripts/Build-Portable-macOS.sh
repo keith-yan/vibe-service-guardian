@@ -40,10 +40,10 @@ if [ "$PYTHON_ARCH" != "$PACKAGE_ARCH" ]; then
   exit 2
 fi
 VERSION="$("$BUILD_VENV/bin/python3" -c 'from vsg import __version__; print(__version__)')"
-case "$VERSION" in
-  [0-9]*.[0-9]*.[0-9]*) ;;
-  *) printf '无效版本号：%s\n' "$VERSION"; exit 2 ;;
-esac
+printf '%s\n' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$' || {
+  printf '无效版本号：%s\n' "$VERSION"
+  exit 2
+}
 "$BUILD_VENV/bin/python3" scripts/Audit-Public-Tree.py --root "$PROJECT_ROOT"
 "$BUILD_VENV/bin/python3" -m unittest discover -s tests -v
 VSG_TARGET_ARCH="$PACKAGE_ARCH" "$BUILD_VENV/bin/python3" -m PyInstaller \
@@ -80,7 +80,8 @@ cp docs/AGENT-SUPPORT.md docs/ARCHITECTURE.md docs/MODEL-CAPACITY.md \
   docs/PRODUCTION-READINESS-0.8.2.md docs/V0.8.3-CONVERGENCE.md \
   docs/PRODUCTION-READINESS-0.8.3.md docs/V0.8.4-P0-CLOSURE.md \
   docs/PRODUCTION-READINESS-0.8.4.md docs/V0.8.5-P2-A.md \
-  docs/PRODUCTION-READINESS-0.8.5.md docs/VALIDATION.md docs/EVIDENCE-REGISTER.md \
+  docs/PRODUCTION-READINESS-0.8.5.md docs/V0.8.5.1-DAILY-USE.md \
+  docs/VALIDATION.md docs/EVIDENCE-REGISTER.md \
   "$PORTABLE_ROOT/docs/"
 cp docs/case-studies/README.md docs/case-studies/maintainer-validation.md \
   "$PORTABLE_ROOT/docs/case-studies/"

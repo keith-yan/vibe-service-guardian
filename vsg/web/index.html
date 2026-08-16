@@ -61,6 +61,27 @@
         <article class="summary-card"><span class="summary-icon slate">↻</span><div><span>最后更新</span><strong class="time-value" id="metric-updated">—</strong><small id="metric-duration">等待采集</small></div></article>
       </section>
 
+      <section class="attention-panel" aria-label="今日关注">
+        <div class="attention-heading">
+          <div>
+            <div class="eyebrow"><span class="eyebrow-square"></span> TODAY · 今日关注</div>
+            <h2>先看需要处理的，再看完整清单</h2>
+            <p>这里只做视图降噪，不隐藏原始证据，也不会改变风险评分或停止保护。</p>
+          </div>
+          <button class="button button-small" id="attention-show-all" type="button">查看全部服务</button>
+        </div>
+        <div class="attention-metrics" aria-label="今日关注摘要">
+          <div><span>待处理发现</span><strong id="attention-needs-action">—</strong></div>
+          <div><span>可进入关停确认</span><strong id="attention-can-stop">—</strong></div>
+          <div><span>受管建议路径</span><strong id="attention-guidance">—</strong></div>
+          <div><span>模型运行实例</span><strong id="attention-runtimes">—</strong></div>
+        </div>
+        <div class="attention-content">
+          <div class="attention-list" id="attention-list"><span class="confidence-note">正在生成今日关注摘要…</span></div>
+          <div class="runtime-glance" id="runtime-glance"><span class="confidence-note">正在读取本地推理运行时…</span></div>
+        </div>
+      </section>
+
       <section class="collector-strip" id="collector-strip" aria-label="采集器状态"></section>
 
       <section class="relationship-panel" aria-label="服务关系与关停判断">
@@ -88,7 +109,8 @@
 
         <div class="filter-bar" role="toolbar" aria-label="服务过滤器">
           <div class="filter-tabs" id="source-tabs">
-            <button class="chip active" data-source="all" type="button">全部 <span id="count-all">0</span></button>
+            <button class="chip active" data-source="focus" type="button">今日关注 <span id="count-focus">0</span></button>
+            <button class="chip" data-source="all" type="button">全部 <span id="count-all">0</span></button>
             <button class="chip" data-source="host" type="button">宿主机 <span id="count-host">0</span></button>
             <button class="chip" data-source="agent" type="button">Agent 进程 <span id="count-agent">0</span></button>
             <button class="chip" data-source="model_runtime" type="button">模型推理 <span id="count-model-runtime">0</span></button>
@@ -423,13 +445,13 @@
 
   <dialog id="stop-dialog" class="modal modal-wide">
     <form method="dialog" class="modal-frame" id="stop-form">
-      <header><div><span class="modal-kicker danger-text">DESTRUCTIVE ACTION</span><h2>停止进程树</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="关闭">×</button></header>
+      <header><div><span class="modal-kicker danger-text" id="stop-dialog-kicker">DESTRUCTIVE ACTION</span><h2 id="stop-dialog-title">停止进程树</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="关闭">×</button></header>
       <div class="modal-content">
         <div class="warning-box" id="stop-summary">正在生成关停评估…</div>
         <div class="stop-assessment" id="stop-assessment"></div>
         <label class="field" id="stop-observation-field"><span>停止后持续观察</span><select id="stop-observation-minutes"><option value="5">5 分钟</option><option value="15" selected>15 分钟（推荐）</option><option value="30">30 分钟</option></select></label>
         <label class="field" id="stop-confirmation-field"><span id="stop-prompt">请输入确认短语</span><input id="stop-confirmation" autocomplete="off" spellcheck="false"></label>
-        <p class="help-text">系统将在执行前再次校验 PID、启动时间、保护名单和目标来源。停止无法撤销；观察可随时中止，复活后不会自动二次停止。</p>
+        <p class="help-text" id="stop-dialog-help">系统将在执行前再次校验 PID、启动时间、保护名单和目标来源。停止无法撤销；观察可随时中止，复活后不会自动二次停止。</p>
         <div class="stop-verification" id="stop-verification" hidden></div>
       </div>
       <footer><button class="button" value="cancel" type="button" id="stop-cancel">关闭</button><button class="button button-danger" id="stop-submit" type="submit" disabled>停止并观察</button></footer>

@@ -59,6 +59,14 @@ class StaleTests(unittest.TestCase):
         result = assess_service(service(runtime="Ollama"), AppConfig())
         self.assertFalse(any("未能归入" in reason for reason in result.reasons))
 
+    def test_duplicate_vsg_instance_is_protected_review_evidence(self):
+        item = service(started=time.time() - 100 * 3600)
+        item.protected = True
+        item.metadata["vsg_instance"] = True
+        result = assess_service(item, AppConfig(), vsg_instance_count=2)
+        self.assertEqual(result.level, "review")
+        self.assertTrue(any("2 个 VSG 实例" in reason for reason in result.reasons))
+
 
 if __name__ == "__main__":
     unittest.main()

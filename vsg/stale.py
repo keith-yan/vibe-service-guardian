@@ -49,8 +49,26 @@ def assess_service(
     now: float | None = None,
     history: dict[str, Any] | None = None,
     duplicate_count: int = 1,
+    vsg_instance_count: int = 0,
 ) -> RiskAssessment:
     current = now or time.time()
+    if service.metadata.get("vsg_instance"):
+        service.metadata["vsg_instance_count"] = vsg_instance_count
+        if vsg_instance_count > 1:
+            return RiskAssessment(
+                score=config.review_score,
+                level="review",
+                reasons=[
+                    f"检测到 {vsg_instance_count} 个 VSG 实例；请核对是否为旧实例或显式隔离数据目录",
+                    "VSG 实例始终受保护，本工具不会自动停止自身或其他版本",
+                ],
+            )
+        return RiskAssessment(
+            score=0,
+            level="not_scored",
+            reasons=["VSG 控制进程受保护，不参与普通开发服务遗留评分"],
+            scored=False,
+        )
     if service.expected:
         return RiskAssessment(score=0, level="expected", reasons=["已由用户标记为预期服务"])
     if service.source in {"docker", "wsl"}:
@@ -145,6 +163,7 @@ def assess_all(
     now: float | None = None,
 ) -> None:
     duplicates = _duplicate_keys(services)
+    vsg_instance_count = sum(bool(item.metadata.get("vsg_instance")) for item in services)
     histories = histories or {}
     for service in services:
         key = (
@@ -158,4 +177,5 @@ def assess_all(
             now=now,
             history=histories.get(service.fingerprint),
             duplicate_count=duplicates.get(key, 1),
+            vsg_instance_count=vsg_instance_count,
         )

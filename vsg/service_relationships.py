@@ -53,7 +53,20 @@ def recommended_operations(service: dict[str, Any]) -> list[dict[str, Any]]:
             }
         )
 
-    if source == "docker":
+    if metadata.get("vsg_instance"):
+        if metadata.get("vsg_current_instance"):
+            add(
+                "vsg_current_instance",
+                "保留当前 VSG 控制台实例",
+                "这是当前控制台自身。请使用界面的退出入口或 Stop-VSG 脚本结束，不要从服务清单直接停止。",
+            )
+        else:
+            add(
+                "vsg_previous_instance",
+                "复核其他 VSG 实例及其数据目录意图",
+                "检测到另一个受保护的 VSG 进程。先核对 PID、端口、启动时间及是否显式使用独立数据目录；确认属于非预期旧实例后，再使用对应版本的 Stop-VSG 脚本或原终端结束。",
+            )
+    elif source == "docker":
         compose_project = str(metadata.get("compose_project") or "")
         compose_service = str(metadata.get("compose_service") or "")
         if compose_project and compose_service:
@@ -136,10 +149,15 @@ def recommended_operations(service: dict[str, Any]) -> list[dict[str, Any]]:
         )
 
     if not items and service.get("protected"):
+        parent_names = [
+            str(item.get("name") or "unknown")[:80]
+            for item in (service.get("ancestor_chain") or [])[:3]
+        ]
+        parent_hint = f" 可见父进程：{' → '.join(parent_names)}。" if parent_names else ""
         add(
             "manual_review",
             "从原启动入口结束服务",
-            "根据父进程证据回到原项目终端、IDE 或生命周期管理器人工停止。",
+            "根据父进程证据回到原项目终端、IDE 或生命周期管理器人工停止。" + parent_hint,
         )
     return items
 

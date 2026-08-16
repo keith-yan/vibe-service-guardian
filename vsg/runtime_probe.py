@@ -181,7 +181,12 @@ def _prometheus_performance(metrics: dict[str, float]) -> dict[str, Any]:
     ttft_count = _metric(metrics, "time_to_first_token_seconds_count")
     running = _metric(metrics, "num_requests_running", "requests_processing")
     waiting = _metric(metrics, "num_requests_waiting", "requests_deferred")
-    cache = _metric(metrics, "gpu_cache_usage_perc", "kv_cache_usage_ratio")
+    cache = _metric(
+        metrics,
+        "gpu_cache_usage_perc",
+        "kv_cache_usage_ratio",
+        "kv_cache_usage_perc",
+    )
     result: dict[str, Any] = {
         "source": "passive runtime metrics",
         "generation_tps": None,
@@ -274,6 +279,11 @@ class RuntimeProbeCollector:
             "pid": service.get("process", {}).get("pid"),
             "port": port,
             "runtime": service.get("runtime"),
+            "adapter": {
+                "id": "openai_compatible",
+                "label": "OpenAI-compatible read-only probe",
+                "evidence_quality": "unknown",
+            },
             "probe_mode": "passive_read_only",
             "reachable": False,
             "health": "unknown",
@@ -311,6 +321,11 @@ class RuntimeProbeCollector:
             result["reachable"] = True
 
     def _ollama(self, client: LocalHttpClient, result: dict[str, Any]) -> None:
+        result["adapter"] = {
+            "id": "ollama_native",
+            "label": "Ollama native API",
+            "evidence_quality": "unknown",
+        }
         running = client.get("/api/ps")
         self._record_probe(result, "/api/ps", running)
         result["health"] = _health_from_response(running)
@@ -328,6 +343,11 @@ class RuntimeProbeCollector:
             result["version"] = str(version["json"].get("version") or "")[:80] or None
 
     def _llama_cpp(self, client: LocalHttpClient, result: dict[str, Any]) -> None:
+        result["adapter"] = {
+            "id": "llama_cpp_native",
+            "label": "llama.cpp native API",
+            "evidence_quality": "unknown",
+        }
         health = client.get("/health")
         self._record_probe(result, "/health", health)
         result["health"] = _health_from_response(health)
@@ -360,6 +380,19 @@ class RuntimeProbeCollector:
         models = client.get("/v1/models")
         self._record_probe(result, "/v1/models", models)
         result["security"]["auth_posture"] = _auth_posture(models)
+        models_payload = models.get("json")
+        if (
+            not result["models"]
+            and isinstance(models_payload, dict)
+            and isinstance(models_payload.get("data"), list)
+        ):
+            result["models"] = [
+                item
+                for item in (_model_entry(value) for value in models_payload["data"])
+                if item
+            ]
+        if result["models"] and result["health"] == "ready":
+            result["model_load"] = "loaded"
         result["limitations"].append("llama.cpp /health 按官方设计可公开访问，认证判断改用 /v1/models")
 
     def _comfyui(self, client: LocalHttpClient, result: dict[str, Any]) -> None:
@@ -395,6 +428,19 @@ class RuntimeProbeCollector:
             result["performance"].update(_prometheus_performance(parsed_metrics))
             result["_metrics"] = parsed_metrics
 
+    def _vllm(self, client: LocalHttpClient, result: dict[str, Any]) -> None:
+        result["adapter"] = {
+            "id": "vllm_native",
+            "label": "vLLM health, models and metrics",
+            "evidence_quality": "unknown",
+        }
+        self._openai_compatible(client, result)
+        # vLLM exposes useful scheduler/cache evidence through Prometheus.  No
+        # request body, prompt, API key, or target environment variable is read.
+        result["limitations"].append(
+            "vLLM 模型名来自无凭据 /v1/models；启用认证时只保留健康与指标级证据"
+        )
+
     def _apply_metric_delta(self, key: str, result: dict[str, Any]) -> None:
         metrics = result.pop("_metrics", None)
         if not isinstance(metrics, dict):
@@ -428,6 +474,8 @@ class RuntimeProbeCollector:
             self._ollama(client, result)
         elif runtime == "llama.cpp":
             self._llama_cpp(client, result)
+        elif runtime == "vLLM":
+            self._vllm(client, result)
         elif runtime == "ComfyUI":
             self._comfyui(client, result)
         else:
@@ -438,6 +486,25 @@ class RuntimeProbeCollector:
         if isinstance(running, (int, float)):
             self._observed_max_concurrency[key] = max(self._observed_max_concurrency.get(key, 0), int(running))
         result["performance"]["observed_max_concurrency"] = self._observed_max_concurrency.get(key, 0)
+        successful_probes = [
+            item
+            for item in result.get("probes") or []
+            if isinstance(item.get("status"), int) and 200 <= int(item["status"]) < 300
+        ]
+        result["adapter"]["evidence_quality"] = (
+            "native" if successful_probes and result.get("models") else "partial" if successful_probes else "unavailable"
+        )
+        model = (result.get("models") or [{}])[0]
+        result["evidence_summary"] = {
+            "loaded_model": model.get("name"),
+            "quantization": model.get("quantization")
+            or result.get("configuration", {}).get("quantization"),
+            "context_tokens": result.get("capacity", {}).get("context_tokens")
+            or result.get("configuration", {}).get("context_tokens"),
+            "requests_running": result.get("performance", {}).get("requests_running"),
+            "requests_waiting": result.get("performance", {}).get("requests_waiting"),
+            "vram_bytes": model.get("size_vram_bytes"),
+        }
         result["captured_at"] = time.time()
         return result
 

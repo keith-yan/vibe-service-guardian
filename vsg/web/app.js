@@ -5,7 +5,7 @@ const state = {
   platform: null,
   config: null,
   snapshot: null,
-  source: "all",
+  source: "focus",
   riskOnly: false,
   query: "",
   timer: null,
@@ -124,8 +124,8 @@ function sourceLabel(source) {
   }[source] || source;
 }
 
-function riskPresentation(risk) {
-  if (!risk?.scored) return { label: "未评分", cls: "unscored", orb: "normal" };
+function riskPresentation(risk, service = null) {
+  if (!risk?.scored) return { label: service?.protected ? "受保护 · 不参与评分" : "未评分", cls: "unscored", orb: "normal" };
   if (risk.level === "likely_stale") return { label: `疑似遗留 ${risk.score}`, cls: "stale", orb: "stale" };
   if (risk.level === "review") return { label: `建议复核 ${risk.score}`, cls: "review", orb: "review" };
   if (risk.level === "expected") return { label: "预期服务", cls: "", orb: "normal" };
@@ -143,9 +143,11 @@ function searchable(service) {
 
 function filteredServices() {
   const services = state.snapshot?.services || [];
+  const focusIds = new Set(state.snapshot?.attention?.focus_service_ids || []);
   return services.filter((service) => {
+    if (state.source === "focus" && !focusIds.has(service.id)) return false;
     if (state.source === "model_runtime" && !service.metadata?.model_runtime) return false;
-    if (state.source !== "all" && state.source !== "model_runtime" && service.source !== state.source) return false;
+    if (!["all", "focus", "model_runtime"].includes(state.source) && service.source !== state.source) return false;
     if (state.riskOnly && !["review", "likely_stale"].includes(service.risk?.level)) return false;
     if (state.query && !searchable(service).includes(state.query)) return false;
     return true;
@@ -164,6 +166,35 @@ function renderSummary() {
   $("#metric-load").nextElementSibling.textContent = `CPU / 内存 ${summary.memory_percent ?? 0}%`;
   $("#metric-updated").textContent = formatTime(state.snapshot?.generated_at);
   $("#metric-duration").textContent = state.snapshot?.duration_ms != null ? `采集耗时 ${state.snapshot.duration_ms} ms` : "等待采集";
+}
+
+function renderAttention() {
+  const attention = state.snapshot?.attention || {};
+  const summary = attention.summary || {};
+  $("#attention-needs-action").textContent = summary.needs_action ?? "—";
+  $("#attention-can-stop").textContent = summary.can_stop ?? "—";
+  $("#attention-guidance").textContent = summary.managed_guidance ?? "—";
+  $("#attention-runtimes").textContent = summary.model_runtimes ?? "—";
+
+  const list = $("#attention-list");
+  const items = attention.items || [];
+  list.innerHTML = items.length ? items.map((item) => {
+    const serviceId = item.service_ids?.[0] || "";
+    return `<article class="attention-item"><i class="attention-severity ${escapeHtml(item.severity)}"></i><strong>${escapeHtml(item.title)}</strong><small title="${escapeHtml(item.action || "")}">${escapeHtml(item.summary || item.action || "查看证据")}</small>${serviceId ? `<button class="button button-small" type="button" data-attention-service="${escapeHtml(serviceId)}">查看证据</button>` : `<button class="button button-small" type="button" data-attention-view="health">打开体检</button>`}</article>`;
+  }).join("") : '<div class="attention-empty"><strong>当前没有高优先级待处理项</strong><br><small>这不代表未知证据均安全；完整服务仍保留在“全部”清单中。</small></div>';
+
+  const runtimeContainer = $("#runtime-glance");
+  const probes = state.snapshot?.runtime_probes || [];
+  const views = new Map((state.snapshot?.service_relationships?.project_runtime_views || []).map((item) => [item.service?.id, item]));
+  runtimeContainer.innerHTML = probes.length ? probes.slice(0, 4).map((probe) => {
+    const view = views.get(probe.service_id) || {};
+    const model = probe.models?.[0] || {};
+    const capacity = view.capacity || {};
+    const headroom = capacity.available_concurrency == null ? "并发余量待校准" : `可用余量约 ${capacity.available_concurrency} 并发`;
+    const adapter = probe.adapter?.label || "只读运行时探测";
+    const vram = model.size_vram_bytes == null ? "VRAM 未报告" : `VRAM ${formatBytes(model.size_vram_bytes)}`;
+    return `<article class="runtime-glance-item"><strong>${escapeHtml(model.name || view.service?.display_name || probe.runtime)}</strong><span class="status-chip ${escapeHtml(probe.health)}">${escapeHtml(probe.health)}</span><small>${escapeHtml(probe.runtime)} · ${escapeHtml(model.quantization || "量化未知")} · ${escapeHtml(vram)} · ${escapeHtml(headroom)} · ${escapeHtml(adapter)}</small></article>`;
+  }).join("") : '<div class="attention-empty"><strong>未发现可探测的本地模型运行时</strong><br><small>首批支持 Ollama、llama.cpp 与 vLLM 的无凭据只读探测。</small></div>';
 }
 
 function renderCollectors() {
@@ -215,6 +246,7 @@ function renderRelationships() {
 
 function updateCounts() {
   const services = state.snapshot?.services || [];
+  $("#count-focus").textContent = state.snapshot?.attention?.summary?.focus ?? 0;
   $("#count-all").textContent = services.length;
   $("#count-host").textContent = services.filter((item) => item.source === "host").length;
   $("#count-agent").textContent = services.filter((item) => item.source === "agent").length;
@@ -232,7 +264,7 @@ function renderRows() {
   $("#empty-state").hidden = services.length !== 0;
 
   for (const service of services) {
-    const risk = riskPresentation(service.risk);
+    const risk = riskPresentation(service.risk, service);
     let endpoints = (service.endpoints || []).slice(0, 5).map((endpoint) =>
       `<span class="port-tag" title="${escapeHtml(endpoint.protocol)} ${escapeHtml(endpoint.address)}">:${escapeHtml(endpoint.port)}</span>`
     ).join("");
@@ -260,13 +292,13 @@ function renderRows() {
       <td class="load-cell"><div class="load-values"><span>CPU <b>${cpu.toFixed(1)}%</b></span><span>MEM <b>${memory.toFixed(1)}%</b></span></div><progress class="load-progress" max="100" value="${Math.min(100, Math.max(cpu, memory))}"></progress></td>
       <td><span class="mono">${escapeHtml(formatDuration(service.process?.create_time))}</span><br><span class="risk-badge ${risk.cls}">${escapeHtml(risk.label)}</span></td>
       <td class="actions-column"><div class="actions">
-        <button class="row-button" type="button" data-action="details" title="查看归属证据">i</button>
-        <button class="row-button" type="button" data-action="url" title="打开本地 URL" ${canOpen ? "" : "disabled"}>↗</button>
-        <button class="row-button" type="button" data-action="folder" title="打开项目目录" ${service.project?.path ? "" : "disabled"}>⌂</button>
-        <button class="row-button" type="button" data-action="attribute" title="纠正项目与 Agent 归属">✎</button>
-        <button class="row-button" type="button" data-action="mark" title="${service.expected ? "取消预期标记" : "标记为预期服务"}">${service.expected ? "★" : "☆"}</button>
-        <button class="row-button" type="button" data-action="impact" title="查看关停影响与恢复证据">◇</button>
-        <button class="row-button danger" type="button" data-action="stop" title="停止进程树" ${canStop ? "" : "disabled"}>■</button>
+        <button class="row-button" type="button" data-action="details" title="查看归属证据">详情</button>
+        ${canOpen ? '<button class="row-button" type="button" data-action="url" title="打开本地 URL">打开</button>' : ""}
+        ${service.project?.path ? '<button class="row-button" type="button" data-action="folder" title="打开项目目录">目录</button>' : ""}
+        <button class="row-button" type="button" data-action="attribute" title="纠正项目与 Agent 归属">纠正</button>
+        <button class="row-button" type="button" data-action="mark" title="${service.expected ? "取消预期标记" : "标记为预期服务"}">${service.expected ? "取消预期" : "标记预期"}</button>
+        <button class="row-button ${canStop ? "" : "guidance"}" type="button" data-action="impact" title="查看关停影响、建议路径与恢复证据">${canStop ? "关停评估" : "建议路径"}</button>
+        ${canStop ? '<button class="row-button danger" type="button" data-action="stop" title="停止进程树">停止</button>' : ""}
       </div></td>`;
     body.appendChild(row);
   }
@@ -274,6 +306,7 @@ function renderRows() {
 
 function render() {
   renderSummary();
+  renderAttention();
   renderCollectors();
   renderRelationships();
   updateCounts();
@@ -2195,6 +2228,23 @@ async function handleRowAction(event) {
   } catch (error) { showToast(error.message, true); }
 }
 
+function handleAttentionAction(event) {
+  const serviceButton = event.target.closest("button[data-attention-service]");
+  if (serviceButton) {
+    const service = state.snapshot?.services?.find((item) => item.id === serviceButton.dataset.attentionService);
+    if (service) openDetails(service);
+    return;
+  }
+  if (event.target.closest("button[data-attention-view='health']")) activateView("health");
+}
+
+function showAllServices() {
+  state.source = "all";
+  $$("#source-tabs .chip").forEach((item) => item.classList.toggle("active", item.dataset.source === "all"));
+  $("#service-list").scrollIntoView({ behavior: "smooth", block: "start" });
+  renderRows();
+}
+
 function assessmentList(items, empty) {
   const values = items?.length ? items : [empty];
   return `<ul>${values.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
@@ -2215,6 +2265,13 @@ function renderStopAssessment(service, assessment) {
     <section class="assessment-card"><strong>推荐操作（只展示，不执行）</strong>${operations || "<p>暂无可验证的生命周期管理器命令，请根据父进程证据回到原启动入口。</p>"}</section>`;
   $("#stop-assessment").dataset.operations = JSON.stringify(assessment.recommended_operations || []);
   const canStop = Boolean(assessment.can_request_stop);
+  $("#stop-dialog-kicker").textContent = canStop ? "DESTRUCTIVE ACTION" : "READ-ONLY GUIDANCE";
+  $("#stop-dialog-kicker").classList.toggle("danger-text", canStop);
+  $("#stop-dialog-title").textContent = canStop ? "停止进程树" : "建议路径";
+  $("#stop-dialog-help").textContent = canStop
+    ? "系统将在执行前再次校验 PID、启动时间、保护名单和目标来源。停止无法撤销；观察可随时中止，复活后不会自动二次停止。"
+    : "当前仅展示建议和证据；VSG 不会执行任何停止命令。";
+  $("#stop-observation-field").hidden = !canStop;
   $("#stop-confirmation-field").hidden = !canStop;
   $("#stop-submit").hidden = !canStop;
   $("#stop-submit").disabled = !canStop;
@@ -2241,6 +2298,11 @@ async function openStopDialog(service) {
   const pid = service.process.pid;
   $("#stop-summary").textContent = `${service.display_name} · PID ${pid} · 正在读取本机客户端、监听端点与生命周期证据…`;
   $("#stop-assessment").replaceChildren();
+  $("#stop-dialog-kicker").textContent = "STOP ASSESSMENT";
+  $("#stop-dialog-kicker").classList.remove("danger-text");
+  $("#stop-dialog-title").textContent = "关停评估";
+  $("#stop-dialog-help").textContent = "正在读取证据；未完成评估前不会开放停止确认。";
+  $("#stop-observation-field").hidden = true;
   $("#stop-verification").hidden = true;
   $("#stop-confirmation-field").hidden = true;
   $("#stop-submit").hidden = false;
@@ -2434,8 +2496,8 @@ function applyPlatformUi() {
   for (const element of windowsOnly) if (element) element.hidden = !capabilities.windows_services;
   for (const element of wslOnly) if (element) element.hidden = !capabilities.wsl;
   if ((state.source === "windows_service" && !capabilities.windows_services) || (state.source === "wsl" && !capabilities.wsl)) {
-    state.source = "all";
-    $$("#source-tabs .chip").forEach((item) => item.classList.toggle("active", item.dataset.source === "all"));
+    state.source = "focus";
+    $$("#source-tabs .chip").forEach((item) => item.classList.toggle("active", item.dataset.source === "focus"));
   }
 }
 
@@ -2614,6 +2676,8 @@ function bindEvents() {
     if (dialog?.open) dialog.close("cancel");
   });
   $("#service-body").addEventListener("click", handleRowAction);
+  $("#attention-list").addEventListener("click", handleAttentionAction);
+  $("#attention-show-all").addEventListener("click", showAllServices);
   $("#detail-content").addEventListener("click", handleImpactFeedback);
   $("#refresh-button").addEventListener("click", refreshNow);
   $("#settings-button").addEventListener("click", () => { fillSettings(); $("#settings-dialog").showModal(); });
