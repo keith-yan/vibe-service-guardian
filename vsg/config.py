@@ -49,6 +49,9 @@ class AppConfig:
     log_retention_days: int = 7
     enable_runtime_probes: bool = True
     enable_system_notifications: bool = False
+    enable_windows_tray: bool = False
+    windows_hotkey: str = "disabled"
+    onboarding_completed: bool = False
     trusted_nodes: list[str] = field(default_factory=list)
 
     def public_dict(self) -> dict[str, Any]:
@@ -109,9 +112,14 @@ def validate_config(data: dict[str, Any], base: AppConfig | None = None) -> AppC
         "include_wsl",
         "enable_runtime_probes",
         "enable_system_notifications",
+        "enable_windows_tray",
+        "onboarding_completed",
     ):
         if not isinstance(merged[key], bool):
             raise ValueError(f"{key} 必须是布尔值")
+
+    if merged.get("windows_hotkey") not in {"disabled", "ctrl_alt_g"}:
+        raise ValueError("windows_hotkey 只能是 disabled 或 ctrl_alt_g")
 
     nodes = merged.get("trusted_nodes", [])
     if not isinstance(nodes, list) or len(nodes) > 8:

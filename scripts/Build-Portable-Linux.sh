@@ -55,10 +55,12 @@ cp docs/AGENT-SUPPORT.md docs/ARCHITECTURE.md docs/MODEL-CAPACITY.md \
   docs/PRODUCTION-READINESS-0.8.3.md docs/V0.8.4-P0-CLOSURE.md \
   docs/PRODUCTION-READINESS-0.8.4.md docs/V0.8.5-P2-A.md \
   docs/PRODUCTION-READINESS-0.8.5.md docs/V0.8.5.1-DAILY-USE.md \
+  docs/V0.8.5.2-P1-DAILY-WORKFLOW.md docs/PRODUCTION-READINESS-0.8.5.2.md \
   docs/VALIDATION.md docs/EVIDENCE-REGISTER.md \
   "$PORTABLE_ROOT/docs/"
 mkdir -p "$PORTABLE_ROOT/docs/case-studies" "$PORTABLE_ROOT/docs/assets"
 cp docs/case-studies/README.md docs/case-studies/maintainer-validation.md \
+  docs/case-studies/macos-vm-preview-0.8.5.2.md \
   "$PORTABLE_ROOT/docs/case-studies/"
 cp docs/assets/vsg-overview.svg "$PORTABLE_ROOT/docs/assets/"
 "$BUILD_VENV/bin/python3" scripts/Collect-ThirdPartyLicenses.py \

@@ -2,7 +2,9 @@
 
 [Impact & evidence](IMPACT.md) · [Roadmap](ROADMAP.md) · [Maintainers](MAINTAINERS.md) · [Governance](GOVERNANCE.md) · [Security](SECURITY.md) · [Privacy](PRIVACY.md)
 
-Vibe Service Guardian 0.8.5.1 (unreleased) is a local-first Windows, macOS, and Linux tool for service attribution, AI-runtime health checks, open-weight model capacity planning, and inference optimization. It answers which processes are listening, which project or agent chain they belong to, what a stop would affect, whether a service was relaunched, whether a running local model is healthy and safely exposed, which local models can satisfy a requested workload, and how far measured performance differs from the capacity prediction.
+Vibe Service Guardian 0.8.5.2 (unreleased) is a local-first Windows, macOS, and Linux tool for service attribution, AI-runtime health checks, open-weight model capacity planning, and inference optimization. It answers which processes are listening, which project or agent chain they belong to, what a stop would affect, whether a service was relaunched, whether a running local model is healthy and safely exposed, which local models can satisfy a requested workload, and how far measured performance differs from the capacity prediction.
+
+Version 0.8.5.2 closes four high-frequency workflows: the home page identifies the running version/PID/loopback port/uptime; a project cleanup plan previews candidates without exposing a batch-stop API; warning and critical events persist locally with deduplication and read state; and Windows gains an optional native tray, a default-off `Ctrl+Alt+G` shortcut, and explicitly confirmed current-user startup. Desktop integrations remain off by default and never elevate privileges. See [docs/V0.8.5.2-P1-DAILY-WORKFLOW.md](docs/V0.8.5.2-P1-DAILY-WORKFLOW.md) and [docs/PRODUCTION-READINESS-0.8.5.2.md](docs/PRODUCTION-READINESS-0.8.5.2.md).
 
 Version 0.8.5.1 addresses four high-frequency daily-use gaps: Today's Focus is now the default noise-reduced view; an OS-level per-data-directory lock prevents concurrent VSG launches from silently taking adjacent ports; protected and managed rows expose a clear guidance path instead of a disabled stop icon; and native read-only Ollama, llama.cpp, and vLLM adapters surface the loaded model and measured concurrency headroom on the home page. No suggested command is executed. See [docs/V0.8.5.1-DAILY-USE.md](docs/V0.8.5.1-DAILY-USE.md).
 
@@ -49,7 +51,7 @@ The bundled catalog is a dated, non-exhaustive offline snapshot covering an init
 ## Platform status
 
 - Windows 10/11 x64: source and unsigned portable build path; current Windows-host tests are available.
-- macOS 13+ arm64/x86_64: native build and validation scripts are provided, but both architectures still require real-Mac acceptance evidence.
+- macOS 13+ arm64/x86_64: native build and validation scripts are provided. An r8 automated native preview passed on a macOS 13.7.8 x86_64 AMD-hosted VMware guest, but manual UI evidence and the r9 target rerun remain incomplete; this does not replace physical Intel Mac or Apple Silicon acceptance.
 - Ubuntu 22.04+ and graphical Linux on x86_64/aarch64: supported code, browser UI, desktop launcher template, and native build/validation chain; native ELF acceptance remains required on each target architecture.
 
 ## Agent coverage

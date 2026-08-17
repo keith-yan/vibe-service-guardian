@@ -50,6 +50,7 @@ from .network_topology import build_network_topology
 from .platforms import platform_info
 from .posture import PostureEvaluator
 from .privacy import atomic_write_private_text, ensure_private_directory, harden_private_file
+from .project_cleanup import build_project_cleanup_plans
 from .runtime_probe import RuntimeProbeCollector
 from .scanner import Scanner
 from .project_rules import AttributionRuleError, validate_rule_payload
@@ -63,6 +64,7 @@ from .rule_packs import (
 from .service_benchmark import ServiceBenchmarkError, run_service_benchmark
 from .service_relationships import build_service_relationships
 from .single_instance import SingleInstanceGuard
+from .startup import configure_windows_startup, windows_startup_status
 from .storage import Storage
 from .stop_observation import (
     OBSERVATION_MINUTES,
@@ -71,8 +73,10 @@ from .stop_observation import (
 )
 from .telemetry import TelemetryCollector
 from .timeline import TimelineTracker, build_incident_view
+from .tray import TrayController
 from .trusted_nodes import TrustedNodeCollector
 from .workload_matrix import WorkloadMatrixError, WorkloadMatrixManager
+from .launch_status import notify_version_conflict, record_version_conflict
 
 
 LOGGER = logging.getLogger("vsg")
@@ -312,6 +316,98 @@ class AppState:
         self.instance_id = secrets.token_urlsafe(18)
         self.server: ThreadingHTTPServer | None = None
         self.started_at = time.time()
+        self.bound_port: int | None = None
+        self.tray = TrayController(
+            self.open_dashboard,
+            self.open_today_focus,
+            self.request_shutdown,
+            lambda: int(self.storage.notification_center(1)["unread_count"]),
+        )
+
+    def _local_url(self, suffix: str = "/") -> str | None:
+        if not self.bound_port:
+            return None
+        return f"http://127.0.0.1:{self.bound_port}{suffix}"
+
+    def open_dashboard(self) -> None:
+        url = self._local_url("/")
+        if url:
+            webbrowser.open(url, new=2)
+
+    def open_today_focus(self) -> None:
+        url = self._local_url("/#today-focus")
+        if url:
+            webbrowser.open(url, new=2)
+
+    def request_shutdown(self) -> None:
+        try:
+            self.storage.add_audit(
+                "application.shutdown",
+                "vsg",
+                "tray_requested",
+            )
+        except Exception:
+            LOGGER.exception("Unable to record tray shutdown request")
+        if self.server:
+            threading.Thread(
+                target=self.server.shutdown,
+                name="vsg-tray-shutdown",
+                daemon=True,
+            ).start()
+
+    def start_integrations(self, port: int) -> None:
+        self.bound_port = int(port)
+        self.tray.configure(
+            bool(self.config.enable_windows_tray),
+            self.config.windows_hotkey,
+        )
+
+    def integration_status(self) -> dict[str, Any]:
+        return {
+            "tray": self.tray.status(),
+            "startup": windows_startup_status(),
+        }
+
+    def instance_status(self) -> dict[str, Any]:
+        return {
+            "version": __version__,
+            "pid": os.getpid(),
+            "port": self.bound_port,
+            "started_at": self.started_at,
+            "instance_id": self.instance_id,
+            "bind_address": "127.0.0.1",
+            "portable": bool(getattr(sys, "frozen", False)),
+        }
+
+    def onboarding_status(self) -> dict[str, Any]:
+        roots = [Path(item) for item in self.config.project_roots]
+        snapshot = self.collector.get_snapshot()
+        return {
+            "completed": bool(self.config.onboarding_completed),
+            "checks": [
+                {
+                    "code": "loopback_only",
+                    "ready": True,
+                    "detail": "127.0.0.1",
+                },
+                {
+                    "code": "project_roots",
+                    "ready": any(path.is_dir() for path in roots),
+                    "configured": len(roots),
+                    "existing": sum(1 for path in roots if path.is_dir()),
+                },
+                {
+                    "code": "first_snapshot",
+                    "ready": not bool(snapshot.get("loading")),
+                },
+                {
+                    "code": "runtime_probes",
+                    "ready": bool(self.config.enable_runtime_probes),
+                    "optional": True,
+                },
+            ],
+            "automatic_changes": False,
+        }
 
     def update_config(self, raw: dict[str, Any]) -> AppConfig:
         unknown = sorted(set(raw) - set(self.config.public_dict()))
@@ -321,6 +417,11 @@ class AppState:
         save_config(config, self.data_dir)
         self.config = config
         self.collector.update_config(config)
+        if self.bound_port:
+            self.tray.configure(
+                bool(config.enable_windows_tray),
+                config.windows_hotkey,
+            )
         self.storage.add_audit("settings.update", "configuration", "success", {"keys": sorted(raw)})
         return config
 
@@ -396,6 +497,7 @@ class AppState:
         )
 
     def close(self) -> None:
+        self.tray.close()
         observations_stopped = self.stop_observations.close()
         matrix_stopped = self.workload_matrix.close()
         collector_stopped = self.collector.stop()
@@ -539,6 +641,9 @@ class VSGHandler(BaseHTTPRequestHandler):
                     "token": self.state.token,
                     "started_at": self.state.started_at,
                     "platform": platform_info(),
+                    "instance": self.state.instance_status(),
+                    "onboarding": self.state.onboarding_status(),
+                    "integrations": self.state.integration_status(),
                 },
             )
             return
@@ -550,7 +655,21 @@ class VSGHandler(BaseHTTPRequestHandler):
                     "snapshot": self.state.collector.get_snapshot(),
                     "config": self.state.config.public_dict(),
                     "platform": platform_info(),
+                    "instance": self.state.instance_status(),
+                    "onboarding": self.state.onboarding_status(),
+                    "integrations": self.state.integration_status(),
                 },
+            )
+            return
+        if parsed.path == "/api/notifications":
+            query = parse_qs(parsed.query)
+            try:
+                limit = int(query.get("limit", ["100"])[0])
+            except ValueError:
+                limit = 100
+            self._json(
+                HTTPStatus.OK,
+                {"ok": True, **self.state.storage.notification_center(limit)},
             )
             return
         if parsed.path == "/api/audit":
@@ -675,6 +794,25 @@ class VSGHandler(BaseHTTPRequestHandler):
                 {"ok": True, "relationships": snapshot.get("service_relationships") or {}},
             )
             return
+        if parsed.path == "/api/projects/cleanup-plans":
+            snapshot = self.state.collector.get_snapshot()
+            self._json(
+                HTTPStatus.OK,
+                {
+                    "ok": True,
+                    "plan": build_project_cleanup_plans(
+                        snapshot.get("services") or [],
+                        snapshot.get("service_relationships") or {},
+                    ),
+                },
+            )
+            return
+        if parsed.path == "/api/integrations":
+            self._json(
+                HTTPStatus.OK,
+                {"ok": True, **self.state.integration_status()},
+            )
+            return
         if parsed.path == "/api/model-planner/status":
             self._json(HTTPStatus.OK, {"ok": True, **self.state.model_planner_payload()})
             return
@@ -781,7 +919,71 @@ class VSGHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/settings":
                 config = self.state.update_config(body)
-                self._json(HTTPStatus.OK, {"ok": True, "config": config.public_dict()})
+                self._json(
+                    HTTPStatus.OK,
+                    {
+                        "ok": True,
+                        "config": config.public_dict(),
+                        "integrations": self.state.integration_status(),
+                    },
+                )
+                return
+            if path == "/api/onboarding/complete":
+                completed = body.get("completed")
+                if not isinstance(completed, bool):
+                    raise ValueError("completed 必须是布尔值")
+                config = self.state.update_config({"onboarding_completed": completed})
+                self._json(
+                    HTTPStatus.OK,
+                    {
+                        "ok": True,
+                        "config": config.public_dict(),
+                        "onboarding": self.state.onboarding_status(),
+                    },
+                )
+                return
+            if path == "/api/notifications/acknowledge":
+                acknowledge_all = body.get("all") is True
+                raw_ids = body.get("ids") or []
+                if not isinstance(raw_ids, list) or len(raw_ids) > 500:
+                    raise ValueError("ids 必须是最多 500 项的数组")
+                if not acknowledge_all and not raw_ids:
+                    raise ValueError("必须提供 ids 或 all=true")
+                if any(isinstance(value, bool) or not isinstance(value, int) for value in raw_ids):
+                    raise ValueError("通知 id 必须是整数")
+                changed = self.state.storage.acknowledge_notifications(
+                    raw_ids,
+                    acknowledge_all=acknowledge_all,
+                )
+                self.state.storage.add_audit(
+                    "notifications.acknowledge",
+                    "all" if acknowledge_all else "selected",
+                    "success",
+                    {"changed": changed},
+                )
+                self._json(
+                    HTTPStatus.OK,
+                    {
+                        "ok": True,
+                        "changed": changed,
+                        **self.state.storage.notification_center(100),
+                    },
+                )
+                return
+            if path == "/api/startup/configure":
+                enabled = body.get("enabled")
+                if not isinstance(enabled, bool):
+                    raise ValueError("enabled 必须是布尔值")
+                status = configure_windows_startup(
+                    enabled,
+                    str(body.get("confirmation") or ""),
+                )
+                self.state.storage.add_audit(
+                    "startup.configure",
+                    "current_user",
+                    "enabled" if enabled else "disabled",
+                )
+                self._json(HTTPStatus.OK, {"ok": True, "startup": status})
                 return
             if path == "/api/impact/feedback":
                 service = self._require_service(body)
@@ -1683,6 +1885,8 @@ class VSGHandler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.OK, {"ok": True, "url": url})
                 return
             if path == "/api/shutdown":
+                if str(body.get("confirmation") or "") != "EXIT VSG":
+                    raise ValueError("确认短语必须是 EXIT VSG")
                 self.state.storage.add_audit("application.shutdown", "vsg", "success")
                 self._json(HTTPStatus.OK, {"ok": True})
                 threading.Thread(target=self.server.shutdown, name="vsg-shutdown", daemon=True).start()
@@ -1839,6 +2043,36 @@ def _live_runtime(
     return runtime, health
 
 
+def _open_live_instance(
+    data_dir: Path,
+    live: tuple[dict[str, Any], dict[str, Any]],
+    *,
+    open_requested: bool,
+) -> None:
+    runtime, health = live
+    running_version = str(health.get("version") or runtime.get("version") or "unknown")
+    running_port = int(runtime["port"])
+    if running_version != __version__:
+        try:
+            record_version_conflict(
+                data_dir,
+                requested_version=__version__,
+                running_version=running_version,
+                running_pid=(
+                    int(runtime["pid"])
+                    if isinstance(runtime.get("pid"), int) and not isinstance(runtime.get("pid"), bool)
+                    else None
+                ),
+                running_port=running_port,
+            )
+        except OSError:
+            LOGGER.warning("unable to record existing-version launch status", exc_info=True)
+        if open_requested:
+            notify_version_conflict(__version__, running_version)
+    if open_requested:
+        webbrowser.open(f"http://127.0.0.1:{running_port}/", new=2)
+
+
 def _post_json(url: str, token: str, body: dict[str, Any] | None = None, timeout: float = 3.0) -> dict[str, Any]:
     parsed = _validated_control_url(url)
     encoded = json.dumps(body or {}).encode("utf-8")
@@ -1876,13 +2110,14 @@ def control_existing(data_dir: Path, action: str) -> int:
     base = f"http://127.0.0.1:{port}"
     try:
         if action == "open":
+            health = _get_json(base + "/healthz")
             if not _health_is_vsg(
-                _get_json(base + "/healthz"),
+                health,
                 instance_id,
                 require_current_version=False,
             ):
                 return 3
-            webbrowser.open(base + "/", new=2)
+            _open_live_instance(data_dir, (runtime, health), open_requested=True)
             return 0
         if not _health_is_vsg(_get_json(base + "/healthz"), instance_id):
             return 3
@@ -1894,7 +2129,11 @@ def control_existing(data_dir: Path, action: str) -> int:
             or not isinstance(bootstrap.get("token"), str)
         ):
             return 3
-        _post_json(base + "/api/shutdown", bootstrap["token"])
+        _post_json(
+            base + "/api/shutdown",
+            bootstrap["token"],
+            {"confirmation": "EXIT VSG"},
+        )
         return 0
     except (OSError, urllib.error.URLError, KeyError, json.JSONDecodeError):
         return 3
@@ -1952,9 +2191,7 @@ def main(argv: list[str] | None = None) -> int:
 
     live = _live_runtime(data_dir)
     if live:
-        existing_port = int(live[0]["port"])
-        if args.open:
-            webbrowser.open(f"http://127.0.0.1:{existing_port}/", new=2)
+        _open_live_instance(data_dir, live, open_requested=args.open)
         return 0
 
     guard = SingleInstanceGuard(data_dir / "instance.lock")
@@ -1965,9 +2202,7 @@ def main(argv: list[str] | None = None) -> int:
             time.sleep(0.1)
             live = _live_runtime(data_dir, timeout=0.3)
             if live:
-                existing_port = int(live[0]["port"])
-                if args.open:
-                    webbrowser.open(f"http://127.0.0.1:{existing_port}/", new=2)
+                _open_live_instance(data_dir, live, open_requested=args.open)
                 return 0
         LOGGER.error("another VSG launch holds the data-directory lock but did not become healthy")
         if getattr(sys, "stderr", None):
@@ -1978,9 +2213,7 @@ def main(argv: list[str] | None = None) -> int:
         # Close the small race between the pre-lock health check and lock acquisition.
         live = _live_runtime(data_dir)
         if live:
-            existing_port = int(live[0]["port"])
-            if args.open:
-                webbrowser.open(f"http://127.0.0.1:{existing_port}/", new=2)
+            _open_live_instance(data_dir, live, open_requested=args.open)
             return 0
 
         state = AppState(data_dir, config)
@@ -1993,6 +2226,7 @@ def main(argv: list[str] | None = None) -> int:
             return 4
         state.server = server
         actual_port = server.server_address[1]
+        state.start_integrations(actual_port)
         _write_runtime(data_dir, actual_port, state.instance_id)
         state.storage.add_audit(
             "application.start",

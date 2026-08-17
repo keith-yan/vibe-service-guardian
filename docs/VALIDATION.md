@@ -1,6 +1,31 @@
 # 本地验证记录
 
-本文保留 Vibe Service Guardian 0.4.0–0.8.5 的既有验证证据，并追加 0.8.5.1 日常使用收敛在本地功能分支的可复核结果。本轮没有提交、推送、发布 Release 或提交 OpenAI 申请。
+本文保留 Vibe Service Guardian 0.4.0–0.8.5.1 的既有验证证据，并追加 0.8.5.2 P1 日常工作流及受限 macOS x86_64 VMware 预览的可复核结果。本轮没有提交、推送、发布 Release 或提交 OpenAI 申请。
+
+## 0.8.5.2 P1 日常工作流验收（2026-08-16）
+
+- 首页固定展示实际运行版本、PID、回环端口与运行时长，并提供首次使用检查、提醒中心、项目安全清理和安全退出入口。跨版本重复启动只记录请求/运行版本、PID、端口、时间和动作，不记录数据目录或控制令牌。
+- 项目安全清理返回 `automatic_cleanup=false`、`execution_mode=individual_confirmation_only` 和 `requires_fresh_assessment=true`。受管/受保护服务继续显示建议路径但不能进入停止；可操作项点击后仍走现有逐服务快照复核、PID/创建时间防复用、`STOP <PID>` 与停止观察链路，没有批量停止 API。
+- SQLite schema version 7 在一致性备份和单事务迁移中增加提醒已读位置。专项测试覆盖 warning/critical 去重、单条已读、再次出现重新未读、v6 到 v7 迁移和 Web 不返回内部去重键。
+- Windows 桌面集成默认关闭。打包 EXE 在隔离临时数据目录中完成原生托盘启停：启用后 `running=true` 且无错误，关闭后线程退出；快捷键始终为 `disabled`。验证前后 `HKCU` 的 `VibeServiceGuardian` 开机启动值均不存在，测试未调用启动配置写接口。
+- 打包版 0.8.5.2 使用 Microsoft Edge/CDP 分别完成中文和英文交互检查：首页版本正确，首次检查可见，提醒、项目计划、设置和退出弹窗均可打开；项目计划展示 3 个本机分组和 31 个逐服务入口，退出占位符为 `EXIT VSG`，两次浏览器检查的 warning/error/exception 均为空。
+- 当前 Windows 源码树完整 unittest 共 243 项：242 通过，1 项因 Windows 不适用 POSIX mode-bit 断言而跳过；P1 专项 10 项和 macOS 验收脚本专项 9 项均通过。Ruff、两个前端 JavaScript 语法检查、20 份哈希锁、公开目录审计、Bandit 中/高风险门禁、`pip check` 和 `git diff --check` 通过。
+- 独立源码回环 smoke 确认版本 `0.8.5.2`、端口 `65503`、项目计划仅逐项确认、托盘默认关闭；错误退出短语返回 HTTP 409，`EXIT VSG` 后优雅退出。
+- Windows 0.8.5.2 未签名 EXE 在全新临时数据目录完成原生 smoke：仅绑定 `127.0.0.1`，Host/Origin/随机令牌拒绝、CSP、17 个离线模型候选、29 个服务评估、144 个关系节点、123 条边、3 条本机依赖、2 个 GPU、健康状态 `healthy`、0 个采集错误和优雅退出均通过。服务与关系数量是动态本机样本，不作为固定断言。
+- Windows ZIP 排除运行数据，并通过单根目录、路径穿越/符号链接/体积限制、许可证、SPDX 2.3 SBOM 和 0.8.5.2 文档契约验证。归档为 `Vibe-Service-Guardian-Windows-x64-0.8.5.2.zip`；最终 SHA-256 只以归档旁同名 `.sha256` 为准，避免文档与归档形成哈希自引用。
+- 本轮没有停止用户服务、没有运行真实模型负载、没有读取目标进程环境变量，也没有修改开机启动。macOS/Linux 托盘、完整目标平台真机矩阵和 systemd/launchd/Hermes/OpenCode 原生矩阵仍属于 0.8.6 P2-B。
+
+上线结论与剩余阻断项见 [PRODUCTION-READINESS-0.8.5.2.md](PRODUCTION-READINESS-0.8.5.2.md)。
+
+### macOS x86_64 VMware 预览验收（2026-08-16，r8）
+
+- 环境证据为 macOS 13.7.8、`x86_64`、Python 3.12.10；AMD 宿主机与 VMware 由用户报告，不能由客体日志独立证明。
+- 原生构建与校验输出 `MACOS_NATIVE_VALIDATION_OK` 和 `MACOS_VM_AUTOMATIC_ACCEPTANCE_OK`；测试套件整体为 OK，其中 1 项 Windows Git Bash 专用测试按平台跳过。Mach-O 当前架构和 ad-hoc 签名系统检查通过。
+- 未签名便携 ZIP 的 SHA-256 为 `E41CE43EB8395F8D5CC03527B4A9C1B090B55235DBE5B004B5C927D367BAAA10`。该散列只对应当次 r8 x86_64 构建，不代表 r9 或其他架构。
+- 人工测试辅助服务使用动态回环端口 `50234`，VSG 使用回环端口 `43922`；重复启动复用了同一辅助进程。后续状态文件、PID/端口文件与 `runtime.json` 均显示已完成清理。
+- 该次证据不能升级为完整人工验收：清单仍为未勾选模板，没有三张界面截图；VM 不能验证 Metal、真实 GPU/统一内存、温度、风扇和功耗；也不能替代实体 Intel Mac 或 Apple Silicon。
+- r8 证据 ZIP 的 SHA-256 为 `8534A062F6CFEBE45DA032C82333D302E7BCEA2646E29C699F6DE28741E03C56`，但封装时最终日志仍在写入，ZIP 内日志短于收尾后的独立日志，因此该 ZIP 只作为缺陷证据，不作为完整验收包。
+- r9 已修复日志关闭顺序、最近停止状态、VSG 退出证明和 AppleDouble 排除，并通过 Windows Git Bash 自包含回归；修改后的 r9 尚待 macOS 目标环境重新执行。脱敏审查记录见 [macos-vm-preview-0.8.5.2.md](case-studies/macos-vm-preview-0.8.5.2.md)。
 
 ## 0.8.5.1 日常使用收敛验收（2026-08-16）
 

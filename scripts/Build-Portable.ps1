@@ -42,15 +42,19 @@ if ($Version -notmatch '^\d+\.\d+\.\d+(?:\.\d+)?$') {
 if ($LASTEXITCODE -ne 0) { throw "Portable executable validation failed: $LASTEXITCODE" }
 
 $ReleaseRoot = Join-Path $ProjectRoot 'release'
-$PortableRoot = Join-Path $ReleaseRoot "Vibe-Service-Guardian-Windows-x64-$Version"
-if (Test-Path -LiteralPath $PortableRoot) {
+$PortableName = "Vibe-Service-Guardian-Windows-x64-$Version"
+$PublishedPortableRoot = Join-Path $ReleaseRoot $PortableName
+$PackageStagingRoot = Join-Path $ReleaseRoot ".vsg-package-staging-$PID"
+if (Test-Path -LiteralPath $PackageStagingRoot) {
     $ResolvedRelease = [IO.Path]::GetFullPath($ReleaseRoot)
-    $ResolvedPortable = [IO.Path]::GetFullPath($PortableRoot)
-    if (-not $ResolvedPortable.StartsWith($ResolvedRelease + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
-        throw 'Refusing to clean a path outside the release directory.'
+    $ResolvedStaging = [IO.Path]::GetFullPath($PackageStagingRoot)
+    $ExpectedPrefix = $ResolvedRelease + [IO.Path]::DirectorySeparatorChar + '.vsg-package-staging-'
+    if (-not $ResolvedStaging.StartsWith($ExpectedPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Refusing to clean a staging path outside the release directory.'
     }
-    Remove-Item -LiteralPath $PortableRoot -Recurse -Force
+    Remove-Item -LiteralPath $PackageStagingRoot -Recurse -Force
 }
+$PortableRoot = Join-Path $PackageStagingRoot $PortableName
 New-Item -ItemType Directory -Path $PortableRoot -Force | Out-Null
 
 $Files = @(
@@ -88,12 +92,15 @@ Copy-Item -LiteralPath (Join-Path $ProjectRoot 'docs\PRODUCTION-READINESS-0.8.4.
 Copy-Item -LiteralPath (Join-Path $ProjectRoot 'docs\V0.8.5-P2-A.md') -Destination $PortableDocs
 Copy-Item -LiteralPath (Join-Path $ProjectRoot 'docs\PRODUCTION-READINESS-0.8.5.md') -Destination $PortableDocs
 Copy-Item -LiteralPath (Join-Path $ProjectRoot 'docs\V0.8.5.1-DAILY-USE.md') -Destination $PortableDocs
+Copy-Item -LiteralPath (Join-Path $ProjectRoot 'docs\V0.8.5.2-P1-DAILY-WORKFLOW.md') -Destination $PortableDocs
+Copy-Item -LiteralPath (Join-Path $ProjectRoot 'docs\PRODUCTION-READINESS-0.8.5.2.md') -Destination $PortableDocs
 Copy-Item -LiteralPath (Join-Path $ProjectRoot 'docs\VALIDATION.md') -Destination $PortableDocs
 Copy-Item -LiteralPath (Join-Path $ProjectRoot 'docs\EVIDENCE-REGISTER.md') -Destination $PortableDocs
 $PortableCaseStudies = Join-Path $PortableDocs 'case-studies'
 New-Item -ItemType Directory -Path $PortableCaseStudies -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $ProjectRoot 'docs\case-studies\README.md') -Destination $PortableCaseStudies
 Copy-Item -LiteralPath (Join-Path $ProjectRoot 'docs\case-studies\maintainer-validation.md') -Destination $PortableCaseStudies
+Copy-Item -LiteralPath (Join-Path $ProjectRoot 'docs\case-studies\macos-vm-preview-0.8.5.2.md') -Destination $PortableCaseStudies
 $PortableAssets = Join-Path $PortableDocs 'assets'
 New-Item -ItemType Directory -Path $PortableAssets -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $ProjectRoot 'docs\assets\vsg-overview.svg') -Destination $PortableAssets
@@ -119,5 +126,28 @@ Set-Content -LiteralPath ($ZipPath + '.sha256') -Value ($Hash + '  ' + [IO.Path]
     --version $Version `
     --platform windows
 if ($LASTEXITCODE -ne 0) { throw "Portable archive validation failed: $LASTEXITCODE" }
+
+$PublishedRuntime = Join-Path $PublishedPortableRoot 'data\runtime.json'
+$CanPublishExtractedRoot = $true
+if (Test-Path -LiteralPath $PublishedPortableRoot) {
+    if (Test-Path -LiteralPath $PublishedRuntime) {
+        $CanPublishExtractedRoot = $false
+        Write-Warning 'The existing extracted portable directory is running and was preserved. The ZIP is the newly validated package.'
+    } else {
+        try {
+            Remove-Item -LiteralPath $PublishedPortableRoot -Recurse -Force
+        }
+        catch {
+            $CanPublishExtractedRoot = $false
+            Write-Warning 'The existing extracted portable directory could not be replaced and was preserved. The ZIP is the newly validated package.'
+        }
+    }
+}
+if ($CanPublishExtractedRoot) {
+    Move-Item -LiteralPath $PortableRoot -Destination $PublishedPortableRoot
+}
+if (Test-Path -LiteralPath $PackageStagingRoot) {
+    Remove-Item -LiteralPath $PackageStagingRoot -Recurse -Force
+}
 Write-Host "Portable package: $ZipPath"
 Write-Host "SHA256: $Hash"

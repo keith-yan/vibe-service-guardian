@@ -1,14 +1,16 @@
 # Vibe Service Guardian
 
-[GitHub](https://github.com/keith-yan/vibe-service-guardian) · [English](README.en.md) · [项目影响与证据](IMPACT.md) · [路线图](ROADMAP.md) · [维护者](MAINTAINERS.md) · [0.8.5.1 日常收敛边界](docs/V0.8.5.1-DAILY-USE.md) · [0.8.5 P2-A 边界](docs/V0.8.5-P2-A.md) · [隐私](PRIVACY.md) · [安全](SECURITY.md) · [上线审查](docs/PRODUCTION-READINESS-0.8.5.md) · [本地验证记录](docs/VALIDATION.md)
+[GitHub](https://github.com/keith-yan/vibe-service-guardian) · [English](README.en.md) · [项目影响与证据](IMPACT.md) · [路线图](ROADMAP.md) · [维护者](MAINTAINERS.md) · [0.8.5.2 P1 日常工作流](docs/V0.8.5.2-P1-DAILY-WORKFLOW.md) · [0.8.5.1 日常收敛边界](docs/V0.8.5.1-DAILY-USE.md) · [0.8.5 P2-A 边界](docs/V0.8.5-P2-A.md) · [隐私](PRIVACY.md) · [安全](SECURITY.md) · [上线审查](docs/PRODUCTION-READINESS-0.8.5.2.md) · [本地验证记录](docs/VALIDATION.md)
 
 Vibe Service Guardian（服务守望）是面向 Windows、macOS 与 Linux Vibe Coding 场景的本机服务溯源、模型容量规划和推理优化工具。它一方面把“哪些进程正在监听端口”关联到“哪个项目、哪个 Agent/IDE/终端、是否可能已经遗留”；另一方面读取本机硬件，回答“最大能装什么开放权重模型、指定并发能否支撑、哪个推理引擎更匹配，以及出现 OOM/加速器错误后如何回验”。全部结果通过只监听回环地址、可切换中英文的本地 Web 图形控制台展示。
 
-当前源码版本为 **0.8.5.1（未发布）**。公开仓库 `main` 已包含 0.8.5 P2-A；本轮 0.8.5.1 只在本地功能分支开发，没有提交、推送或发布。现有 Windows 本机测试和构建记录不等同于 macOS/Linux 真机验收。
+当前源码版本为 **0.8.5.2（未发布）**。公开仓库 `main` 已包含 0.8.5 P2-A；0.8.5.1 与本轮 0.8.5.2 P1 仍只在本地功能分支开发，没有推送或发布。现有 Windows 本机结果与一次 macOS x86_64 VMware 自动预览验收，均不等同于完整 macOS/Linux 真机矩阵。
+
+0.8.5.2 闭合启动辨识、按项目安全清理预览、本机持久提醒和 Windows 可选桌面入口四条高频工作流。首页显示实际运行版本/PID/端口/时长，项目计划没有批量停止 API，提醒只写本机 SQLite；托盘、快捷键和当前用户开机启动均默认关闭且不提权。完整边界见 [0.8.5.2 P1 日常工作流](docs/V0.8.5.2-P1-DAILY-WORKFLOW.md)。
 
 0.8.5.1 优先解决四个日常高频问题：默认“今日关注”降低系统服务噪声；同一数据目录增加跨平台单实例锁；受保护/受管服务直接展示可执行但绝不代执行的建议路径；Ollama、llama.cpp、vLLM 原生只读适配器把当前模型与实测并发余量放到首页。完整边界见 [0.8.5.1 日常使用收敛](docs/V0.8.5.1-DAILY-USE.md)。
 
-0.8.5 P2-A 把一次显式归属纠正沉淀为可搜索、可启停、最近 5 版可回滚的本机规则；规则冲突按“具体度优先、同范围最新意图胜出”确定，命中与纠正按唯一服务生命周期统计。脱敏规则包必须先校验、预览冲突并逐条重绑定；Agent 子进程继承父链保护，Docker 只请求固定白名单元数据而不再读入完整 inspect。完整边界见 [0.8.5 P2-A 说明](docs/V0.8.5-P2-A.md)。工具仍不自动清理、不自动调权、不读取目标进程/容器环境变量；当前仍是“本机单用户 Alpha”，原因见 [上线审查](docs/PRODUCTION-READINESS-0.8.5.md)。
+0.8.5 P2-A 把一次显式归属纠正沉淀为可搜索、可启停、最近 5 版可回滚的本机规则；规则冲突按“具体度优先、同范围最新意图胜出”确定，命中与纠正按唯一服务生命周期统计。脱敏规则包必须先校验、预览冲突并逐条重绑定；Agent 子进程继承父链保护，Docker 只请求固定白名单元数据而不再读入完整 inspect。完整边界见 [0.8.5 P2-A 说明](docs/V0.8.5-P2-A.md)。工具仍不自动清理、不自动调权、不读取目标进程/容器环境变量；当前仍是“本机单用户 Alpha”，原因见 [上线审查](docs/PRODUCTION-READINESS-0.8.5.2.md)。
 
 ## 30 秒看懂
 
@@ -18,13 +20,13 @@ VSG 的核心不是“列出端口”，而是把一个本机服务沿着证据�
 
 最短体验路径：从源码运行 `python -m vsg --open`，在“服务监控”中打开一条服务详情；先核对归属和判断证据，再记录“确属遗留 / 不是遗留 / 暂不确定”。顶部“本机成效”只预览聚合结果；只有精确输入 `EXPORT REPORT` 才下载脱敏 JSON，且不会自动上传。运行方法见[源码运行](#源码运行)，证据边界见 [IMPACT.md](IMPACT.md)。
 
-## 0.8.5.1 平台状态
+## 0.8.5.2 平台状态
 
 | 平台 | 交付状态 | 端口采集 | 说明 |
 |---|---|---|---|
 | Windows 10/11 x64 | 当前 Windows 主机已执行源码、自动化和便携 EXE 路径验证；Windows 10 仍需独立实机验收 | `psutil` 系统连接表 | Windows 服务与 WSL 单独分组 |
 | macOS 13+ Apple Silicon `arm64` | 代码与构建链已适配 | 系统 `lsof` | 需在真实 Apple Silicon Mac 上构建和原生验收 |
-| macOS 13+ Intel `x86_64` | 代码与构建链已适配 | 系统 `lsof` | 需在真实 Intel Mac 上构建和原生验收 |
+| macOS 13+ `x86_64` | 0.8.5.2 r8 已在 macOS 13.7.8 AMD/VMware 客体通过自动原生预览验收 | 系统 `lsof` | 人工界面证据与 r9 目标机复验未完成；不能替代实体 Intel Mac |
 | Ubuntu 22.04+ / 图形 Linux `x86_64`、`aarch64` | 代码、图形启动入口、原生构建与验收链已适配 | `psutil` / procfs 可见范围 | 仍需在对应 Linux 真机生成 ELF 并执行原生验收 |
 
 Windows 无法直接生成可信的 macOS Mach-O 或 Linux ELF。`scripts/Build-macOS-Build-Kit.ps1` 与 `scripts/Build-Linux-Build-Kit.ps1` 可准备源码构建包，再在目标系统生成未签名原生便携包。详见 [MACOS-VALIDATION.md](MACOS-VALIDATION.md) 和 [LINUX-VALIDATION.md](LINUX-VALIDATION.md)。
@@ -142,7 +144,7 @@ VSG 不自动安装建议引擎、不改驱动、不改功耗/风扇固件、不
 
 ## Windows 便携包
 
-先在源码目录执行 `Build-Portable.cmd`，脚本会生成 `Vibe-Service-Guardian-Windows-x64-0.8.5.1.zip`。然后：
+先在源码目录执行 `Build-Portable.cmd`，脚本会生成 `Vibe-Service-Guardian-Windows-x64-0.8.5.2.zip`。然后：
 
 1. 解压 ZIP 到仅当前用户可访问的可写目录。
 2. 双击 `Start-VSG.cmd`。
@@ -153,12 +155,12 @@ VSG 不自动安装建议引擎、不改驱动、不改功耗/风扇固件、不
 
 ## macOS 未签名便携包
 
-当前修订尚无真实 macOS 验收证据，因此提供的是固定依赖的原生构建包，不是声称已经实机验证的二进制：
+当前只有 macOS 13.7.8 x86_64 AMD/VMware 客体上的 r8 自动原生预览证据；人工界面证据、r9 复验、实体 Intel Mac 和 Apple Silicon 均未完成。因此提供的是固定依赖的原生构建包，不是声称已完成完整跨平台验收的二进制：
 
-1. 在目标 Mac 解压本地生成的 `Vibe-Service-Guardian-macOS-build-kit-0.8.5.1.zip`。
+1. 在目标 Mac 解压本地生成的 `Vibe-Service-Guardian-macOS-build-kit-0.8.5.2-r9.tar.gz`。
 2. 执行 `chmod +x ./*.command ./scripts/*.sh`。
 3. 执行 `./scripts/Build-Portable-macOS.sh`。
-4. 进入构建生成的 `release/Vibe-Service-Guardian-macOS-<架构>-0.8.5.1` 目录，运行 `./scripts/Validate-macOS.sh`，以 `MACOS_NATIVE_VALIDATION_OK` 为通过标志。
+4. 进入构建生成的 `release/Vibe-Service-Guardian-macOS-<架构>-0.8.5.2` 目录，运行 `./scripts/Validate-macOS.sh`，以 `MACOS_NATIVE_VALIDATION_OK` 为通过标志。
 
 构建脚本只生成当前 Mac 的原生架构：Apple Silicon 生成 `arm64`，Intel Mac 生成 `x86_64`。首版不使用 Apple Developer ID 证书、不公证、不上传；PyInstaller 会按 macOS 要求执行无身份的 ad-hoc 签名，这不等于可信发布者签名。Gatekeeper 操作与验收项见 [MACOS-VALIDATION.md](MACOS-VALIDATION.md)。
 
@@ -171,7 +173,7 @@ Windows 侧先运行 `powershell -File .\scripts\Build-Linux-Build-Kit.ps1` 生�
 ```bash
 chmod +x ./*.sh ./scripts/*.sh
 ./scripts/Build-Portable-Linux.sh
-./release/Vibe-Service-Guardian-Linux-$(uname -m)-0.8.5.1/scripts/Validate-Linux.sh
+./release/Vibe-Service-Guardian-Linux-$(uname -m)-0.8.5.2/scripts/Validate-Linux.sh
 ```
 
 便携包运行 `./Start-VSG.sh` 后由默认浏览器打开图形控制台。源码运行可先执行 `./Setup-Linux.sh`；若希望加入 GNOME/KDE 等桌面应用菜单，显式运行 `VSG_INSTALL_DESKTOP_LAUNCHER=1 ./Setup-Linux.sh`，只写入当前用户的 XDG applications 目录，不使用 `sudo`。
