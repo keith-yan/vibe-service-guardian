@@ -2,7 +2,7 @@
 
 This roadmap describes intended work, not commitments or completed adoption. Priorities are set by user safety, decision value, evidence quality, and cross-platform correctness.
 
-## 0.8.3 — local Alpha convergence (completed local milestone, not published)
+## 0.8.3 — local Alpha convergence (completed internal milestone)
 
 - Explainable service ownership, stale assessment, stop impact, bounded stop verification, and recovery guidance.
 - Local model capacity planning, runtime health, fixed workload matrix, and prediction-error calibration.
@@ -12,7 +12,7 @@ This roadmap describes intended work, not commitments or completed adoption. Pri
 
 Exit criteria: all local automated gates pass; current-host portable path is rebuilt and smoke-tested; unsupported real-platform claims remain explicitly unverified.
 
-## 0.8.4 — bounded daily-use P0 closure (completed local milestone, not published)
+## 0.8.4 — bounded daily-use P0 closure (completed internal milestone)
 
 - Observe a stopped host service for a user-selected 5/15/30-minute window and report evidence-backed relaunch without a second automatic stop.
 - Reuse explicit user lifecycle labels through a one-way executable-path and working-directory identity while preserving every existing stop guard.
@@ -21,7 +21,7 @@ Exit criteria: all local automated gates pass; current-host portable path is reb
 
 Exit criteria: P0-specific tests and the full local gate pass; the Windows portable package is rebuilt and smoke-tested; no P1 feature or target-platform claim is silently included.
 
-## 0.8.5 — attribution evolution P2-A (completed source milestone, unreleased)
+## 0.8.5 — attribution evolution P2-A (completed internal milestone, included in 0.8.5.2 Alpha 1)
 
 - Turn an explicit ownership correction into a deterministic local rule with instance, standard, or strict matching scope.
 - Keep the latest five auditable rule versions, deterministic conflict resolution, hit/override evidence, and a unique-service-episode correction rate.
@@ -30,7 +30,7 @@ Exit criteria: P0-specific tests and the full local gate pass; the Windows porta
 
 Exit criteria: schema-6 migration, conflict, rollback, rule-pack, Agent-child, and Docker-privacy tests pass; the full local gate and current-host portable package pass; no P2-B native-platform claim is included.
 
-## 0.8.5.1 — daily-use convergence (completed local milestone, unreleased)
+## 0.8.5.1 — daily-use convergence (completed internal milestone, included in 0.8.5.2 Alpha 1)
 
 - Make an action-oriented Today's Focus view the default without removing the complete inventory or changing risk scores.
 - Enforce one VSG control-plane process per data directory with a crash-safe Windows/macOS/Linux OS lock and cross-version health identity checks.
@@ -39,7 +39,7 @@ Exit criteria: schema-6 migration, conflict, rollback, rule-pack, Agent-child, a
 
 Exit criteria: targeted and full local gates pass; a second-launch smoke proves port/PID reuse rather than adjacent-port fallback; the current-host UI is checked in both languages; other operating systems remain preview until 0.8.6 native acceptance.
 
-## 0.8.5.2 — P1 daily workflow closure (current local branch, unreleased)
+## 0.8.5.2 — P1 daily workflow closure (Alpha 1 release line)
 
 - Make the running version, PID, loopback port, uptime, and first-use readiness visible before the user acts.
 - Explain cross-version duplicate launches instead of silently opening an older instance, while keeping one control plane per data directory.
@@ -48,6 +48,8 @@ Exit criteria: targeted and full local gates pass; a second-launch smoke proves 
 - Provide an optional Windows native tray, default-off global hotkey, and explicitly confirmed current-user startup registration without installing a service or elevating privileges.
 
 Exit criteria: schema-7 migration and P1-specific tests pass; the full local gate passes; Chinese and English headless-browser checks cover the new entry points with no console errors; a fresh unsigned Windows portable archive passes native smoke and checksum validation. No startup entry or global hotkey is enabled during validation.
+
+Release channel: the application and archive version remain `0.8.5.2`; the first unsigned public prerelease uses tag `v0.8.5.2-alpha.1`. This is a Windows-first single-user Alpha with explicit preview/unverified labels for incomplete target-platform evidence, not a stable cross-platform release.
 
 ## 0.8.6 — managed-runtime evidence and native acceptance P2-B
 
@@ -61,7 +63,7 @@ Exit criteria: each supported claim has a native evidence record or is downgrade
 
 ## 0.9 — public Alpha operations
 
-- Create the public repository, enable CI, issue templates, discussions/feedback routing, and private vulnerability reporting.
+- Operate the public repository and CI; continue improving issue templates, discussions/feedback routing, and private vulnerability reporting.
 - Publish unsigned prereleases with checksums, SBOMs, reproducible commands, and known limitations.
 - Collect consented case studies and improve attribution/stale rules from deduplicated outcomes.
 - Review anonymized, explicitly contributed rule-pack patterns only after provenance and consent controls are documented; VSG itself remains local and has no synchronization channel.
