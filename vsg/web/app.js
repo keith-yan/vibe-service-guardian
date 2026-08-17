@@ -5,7 +5,7 @@ const state = {
   platform: null,
   config: null,
   snapshot: null,
-  source: "all",
+  source: "focus",
   riskOnly: false,
   query: "",
   timer: null,
@@ -34,6 +34,11 @@ const state = {
   detailTarget: null,
   impactReport: null,
   notifiedObservationJobs: new Set(),
+  instance: null,
+  onboarding: null,
+  integrations: null,
+  notifications: { items: [], unread_count: 0 },
+  cleanupPlan: null,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -112,6 +117,53 @@ function formatDuration(start) {
   return `${Math.floor(seconds / 86400)}天${Math.floor((seconds % 86400) / 3600)}小时`;
 }
 
+function renderInstanceStatus() {
+  const instance = state.instance || {};
+  $("#instance-version").textContent = `VSG ${instance.version || "—"}`;
+  $("#instance-pid").textContent = `PID ${instance.pid || "—"}`;
+  $("#instance-port").textContent = `${instance.bind_address || "127.0.0.1"}:${instance.port || "—"}`;
+  $("#instance-uptime").textContent = instance.started_at
+    ? `已运行 ${formatDuration(instance.started_at)}`
+    : "启动时间 —";
+}
+
+function renderOnboarding() {
+  const onboarding = state.onboarding || {};
+  const panel = $("#onboarding-panel");
+  panel.hidden = Boolean(onboarding.completed);
+  const labels = {
+    loopback_only: "控制台仅绑定本机回环地址",
+    project_roots: "至少一个项目根目录可访问",
+    first_snapshot: "首次服务快照已完成",
+    runtime_probes: "模型运行时只读探测已启用（可选）",
+  };
+  $("#onboarding-checks").innerHTML = (onboarding.checks || []).map((item) => `
+    <div class="onboarding-check"><span>${escapeHtml(labels[item.code] || item.code)}</span><strong class="${item.ready ? "ready" : "review"}">${item.ready ? "已就绪" : item.optional ? "可选未启用" : "需要处理"}</strong></div>`).join("");
+}
+
+function renderIntegrationStatus() {
+  const integrations = state.integrations || {};
+  const startup = integrations.startup || {};
+  const startupText = !startup.available
+    ? (startup.reason === "portable_executable_required" ? "仅便携 EXE 可配置；源码模式不会修改系统" : "当前平台不支持")
+    : startup.enabled && startup.managed_by_current_executable
+      ? "已启用：当前用户登录后启动本便携程序"
+      : startup.enabled
+        ? "检测到同名但目标不同的启动项，已禁止覆盖"
+        : "未启用（默认）";
+  $("#startup-status").textContent = startupText;
+  $("#startup-toggle").disabled = !startup.available || (startup.enabled && !startup.managed_by_current_executable);
+  $("#startup-toggle").textContent = startup.enabled && startup.managed_by_current_executable ? "禁用开机启动" : "启用开机启动";
+}
+
+function renderNotificationBadge() {
+  const count = Number(state.notifications?.unread_count || 0);
+  const badge = $("#notification-badge");
+  badge.textContent = count > 99 ? "99+" : String(count);
+  badge.hidden = count <= 0;
+  $("#notification-button").setAttribute("aria-label", `本机提醒，${count} 条未读`);
+}
+
 function sourceLabel(source) {
   return {
     host: "宿主机",
@@ -124,8 +176,8 @@ function sourceLabel(source) {
   }[source] || source;
 }
 
-function riskPresentation(risk) {
-  if (!risk?.scored) return { label: "未评分", cls: "unscored", orb: "normal" };
+function riskPresentation(risk, service = null) {
+  if (!risk?.scored) return { label: service?.protected ? "受保护 · 不参与评分" : "未评分", cls: "unscored", orb: "normal" };
   if (risk.level === "likely_stale") return { label: `疑似遗留 ${risk.score}`, cls: "stale", orb: "stale" };
   if (risk.level === "review") return { label: `建议复核 ${risk.score}`, cls: "review", orb: "review" };
   if (risk.level === "expected") return { label: "预期服务", cls: "", orb: "normal" };
@@ -143,9 +195,11 @@ function searchable(service) {
 
 function filteredServices() {
   const services = state.snapshot?.services || [];
+  const focusIds = new Set(state.snapshot?.attention?.focus_service_ids || []);
   return services.filter((service) => {
+    if (state.source === "focus" && !focusIds.has(service.id)) return false;
     if (state.source === "model_runtime" && !service.metadata?.model_runtime) return false;
-    if (state.source !== "all" && state.source !== "model_runtime" && service.source !== state.source) return false;
+    if (!["all", "focus", "model_runtime"].includes(state.source) && service.source !== state.source) return false;
     if (state.riskOnly && !["review", "likely_stale"].includes(service.risk?.level)) return false;
     if (state.query && !searchable(service).includes(state.query)) return false;
     return true;
@@ -164,6 +218,35 @@ function renderSummary() {
   $("#metric-load").nextElementSibling.textContent = `CPU / 内存 ${summary.memory_percent ?? 0}%`;
   $("#metric-updated").textContent = formatTime(state.snapshot?.generated_at);
   $("#metric-duration").textContent = state.snapshot?.duration_ms != null ? `采集耗时 ${state.snapshot.duration_ms} ms` : "等待采集";
+}
+
+function renderAttention() {
+  const attention = state.snapshot?.attention || {};
+  const summary = attention.summary || {};
+  $("#attention-needs-action").textContent = summary.needs_action ?? "—";
+  $("#attention-can-stop").textContent = summary.can_stop ?? "—";
+  $("#attention-guidance").textContent = summary.managed_guidance ?? "—";
+  $("#attention-runtimes").textContent = summary.model_runtimes ?? "—";
+
+  const list = $("#attention-list");
+  const items = attention.items || [];
+  list.innerHTML = items.length ? items.map((item) => {
+    const serviceId = item.service_ids?.[0] || "";
+    return `<article class="attention-item"><i class="attention-severity ${escapeHtml(item.severity)}"></i><strong>${escapeHtml(item.title)}</strong><small title="${escapeHtml(item.action || "")}">${escapeHtml(item.summary || item.action || "查看证据")}</small>${serviceId ? `<button class="button button-small" type="button" data-attention-service="${escapeHtml(serviceId)}">查看证据</button>` : `<button class="button button-small" type="button" data-attention-view="health">打开体检</button>`}</article>`;
+  }).join("") : '<div class="attention-empty"><strong>当前没有高优先级待处理项</strong><br><small>这不代表未知证据均安全；完整服务仍保留在“全部”清单中。</small></div>';
+
+  const runtimeContainer = $("#runtime-glance");
+  const probes = state.snapshot?.runtime_probes || [];
+  const views = new Map((state.snapshot?.service_relationships?.project_runtime_views || []).map((item) => [item.service?.id, item]));
+  runtimeContainer.innerHTML = probes.length ? probes.slice(0, 4).map((probe) => {
+    const view = views.get(probe.service_id) || {};
+    const model = probe.models?.[0] || {};
+    const capacity = view.capacity || {};
+    const headroom = capacity.available_concurrency == null ? "并发余量待校准" : `可用余量约 ${capacity.available_concurrency} 并发`;
+    const adapter = probe.adapter?.label || "只读运行时探测";
+    const vram = model.size_vram_bytes == null ? "VRAM 未报告" : `VRAM ${formatBytes(model.size_vram_bytes)}`;
+    return `<article class="runtime-glance-item"><strong>${escapeHtml(model.name || view.service?.display_name || probe.runtime)}</strong><span class="status-chip ${escapeHtml(probe.health)}">${escapeHtml(probe.health)}</span><small>${escapeHtml(probe.runtime)} · ${escapeHtml(model.quantization || "量化未知")} · ${escapeHtml(vram)} · ${escapeHtml(headroom)} · ${escapeHtml(adapter)}</small></article>`;
+  }).join("") : '<div class="attention-empty"><strong>未发现可探测的本地模型运行时</strong><br><small>首批支持 Ollama、llama.cpp 与 vLLM 的无凭据只读探测。</small></div>';
 }
 
 function renderCollectors() {
@@ -215,6 +298,7 @@ function renderRelationships() {
 
 function updateCounts() {
   const services = state.snapshot?.services || [];
+  $("#count-focus").textContent = state.snapshot?.attention?.summary?.focus ?? 0;
   $("#count-all").textContent = services.length;
   $("#count-host").textContent = services.filter((item) => item.source === "host").length;
   $("#count-agent").textContent = services.filter((item) => item.source === "agent").length;
@@ -232,7 +316,7 @@ function renderRows() {
   $("#empty-state").hidden = services.length !== 0;
 
   for (const service of services) {
-    const risk = riskPresentation(service.risk);
+    const risk = riskPresentation(service.risk, service);
     let endpoints = (service.endpoints || []).slice(0, 5).map((endpoint) =>
       `<span class="port-tag" title="${escapeHtml(endpoint.protocol)} ${escapeHtml(endpoint.address)}">:${escapeHtml(endpoint.port)}</span>`
     ).join("");
@@ -260,13 +344,13 @@ function renderRows() {
       <td class="load-cell"><div class="load-values"><span>CPU <b>${cpu.toFixed(1)}%</b></span><span>MEM <b>${memory.toFixed(1)}%</b></span></div><progress class="load-progress" max="100" value="${Math.min(100, Math.max(cpu, memory))}"></progress></td>
       <td><span class="mono">${escapeHtml(formatDuration(service.process?.create_time))}</span><br><span class="risk-badge ${risk.cls}">${escapeHtml(risk.label)}</span></td>
       <td class="actions-column"><div class="actions">
-        <button class="row-button" type="button" data-action="details" title="查看归属证据">i</button>
-        <button class="row-button" type="button" data-action="url" title="打开本地 URL" ${canOpen ? "" : "disabled"}>↗</button>
-        <button class="row-button" type="button" data-action="folder" title="打开项目目录" ${service.project?.path ? "" : "disabled"}>⌂</button>
-        <button class="row-button" type="button" data-action="attribute" title="纠正项目与 Agent 归属">✎</button>
-        <button class="row-button" type="button" data-action="mark" title="${service.expected ? "取消预期标记" : "标记为预期服务"}">${service.expected ? "★" : "☆"}</button>
-        <button class="row-button" type="button" data-action="impact" title="查看关停影响与恢复证据">◇</button>
-        <button class="row-button danger" type="button" data-action="stop" title="停止进程树" ${canStop ? "" : "disabled"}>■</button>
+        <button class="row-button" type="button" data-action="details" title="查看归属证据">详情</button>
+        ${canOpen ? '<button class="row-button" type="button" data-action="url" title="打开本地 URL">打开</button>' : ""}
+        ${service.project?.path ? '<button class="row-button" type="button" data-action="folder" title="打开项目目录">目录</button>' : ""}
+        <button class="row-button" type="button" data-action="attribute" title="纠正项目与 Agent 归属">纠正</button>
+        <button class="row-button" type="button" data-action="mark" title="${service.expected ? "取消预期标记" : "标记为预期服务"}">${service.expected ? "取消预期" : "标记预期"}</button>
+        <button class="row-button ${canStop ? "" : "guidance"}" type="button" data-action="impact" title="查看关停影响、建议路径与恢复证据">${canStop ? "关停评估" : "建议路径"}</button>
+        ${canStop ? '<button class="row-button danger" type="button" data-action="stop" title="停止进程树">停止</button>' : ""}
       </div></td>`;
     body.appendChild(row);
   }
@@ -274,6 +358,7 @@ function renderRows() {
 
 function render() {
   renderSummary();
+  renderAttention();
   renderCollectors();
   renderRelationships();
   updateCounts();
@@ -1519,6 +1604,20 @@ async function submitConfirmation(event) {
       state.logEvents = null;
       await loadAdvisor(false, true);
       showToast(window.VSG_I18N?.locale === "en" ? "Log watch stopped" : "日志监控已停止");
+    } else if (action.kind === "startup") {
+      const payload = await api("/api/startup/configure", {
+        method: "POST",
+        body: JSON.stringify({ enabled: action.enabled, confirmation }),
+      });
+      state.integrations = { ...(state.integrations || {}), startup: payload.startup };
+      renderIntegrationStatus();
+      showToast(action.enabled ? "当前用户开机启动已启用" : "当前用户开机启动已禁用");
+    } else if (action.kind === "exit") {
+      if (confirmation !== action.phrase) throw new Error(`确认短语必须是 ${action.phrase}`);
+      clearInterval(state.timer);
+      await api("/api/shutdown", { method: "POST", body: JSON.stringify({ confirmation }) });
+      document.body.innerHTML = '<main class="shutdown-screen"><h1>VSG 已安全退出</h1><p>本机采集与控制台已经停止；被监控服务未被修改。</p></main>';
+      return;
     }
     $("#confirmation-dialog").close();
     state.confirmationAction = null;
@@ -2195,6 +2294,23 @@ async function handleRowAction(event) {
   } catch (error) { showToast(error.message, true); }
 }
 
+function handleAttentionAction(event) {
+  const serviceButton = event.target.closest("button[data-attention-service]");
+  if (serviceButton) {
+    const service = state.snapshot?.services?.find((item) => item.id === serviceButton.dataset.attentionService);
+    if (service) openDetails(service);
+    return;
+  }
+  if (event.target.closest("button[data-attention-view='health']")) activateView("health");
+}
+
+function showAllServices() {
+  state.source = "all";
+  $$("#source-tabs .chip").forEach((item) => item.classList.toggle("active", item.dataset.source === "all"));
+  $("#service-list").scrollIntoView({ behavior: "smooth", block: "start" });
+  renderRows();
+}
+
 function assessmentList(items, empty) {
   const values = items?.length ? items : [empty];
   return `<ul>${values.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
@@ -2215,6 +2331,13 @@ function renderStopAssessment(service, assessment) {
     <section class="assessment-card"><strong>推荐操作（只展示，不执行）</strong>${operations || "<p>暂无可验证的生命周期管理器命令，请根据父进程证据回到原启动入口。</p>"}</section>`;
   $("#stop-assessment").dataset.operations = JSON.stringify(assessment.recommended_operations || []);
   const canStop = Boolean(assessment.can_request_stop);
+  $("#stop-dialog-kicker").textContent = canStop ? "DESTRUCTIVE ACTION" : "READ-ONLY GUIDANCE";
+  $("#stop-dialog-kicker").classList.toggle("danger-text", canStop);
+  $("#stop-dialog-title").textContent = canStop ? "停止进程树" : "建议路径";
+  $("#stop-dialog-help").textContent = canStop
+    ? "系统将在执行前再次校验 PID、启动时间、保护名单和目标来源。停止无法撤销；观察可随时中止，复活后不会自动二次停止。"
+    : "当前仅展示建议和证据；VSG 不会执行任何停止命令。";
+  $("#stop-observation-field").hidden = !canStop;
   $("#stop-confirmation-field").hidden = !canStop;
   $("#stop-submit").hidden = !canStop;
   $("#stop-submit").disabled = !canStop;
@@ -2241,6 +2364,11 @@ async function openStopDialog(service) {
   const pid = service.process.pid;
   $("#stop-summary").textContent = `${service.display_name} · PID ${pid} · 正在读取本机客户端、监听端点与生命周期证据…`;
   $("#stop-assessment").replaceChildren();
+  $("#stop-dialog-kicker").textContent = "STOP ASSESSMENT";
+  $("#stop-dialog-kicker").classList.remove("danger-text");
+  $("#stop-dialog-title").textContent = "关停评估";
+  $("#stop-dialog-help").textContent = "正在读取证据；未完成评估前不会开放停止确认。";
+  $("#stop-observation-field").hidden = true;
   $("#stop-verification").hidden = true;
   $("#stop-confirmation-field").hidden = true;
   $("#stop-submit").hidden = false;
@@ -2415,10 +2543,13 @@ function fillSettings() {
   $("#setting-wsl").checked = config.include_wsl;
   $("#setting-runtime-probes").checked = config.enable_runtime_probes;
   $("#setting-system-notifications").checked = config.enable_system_notifications;
+  $("#setting-windows-tray").checked = config.enable_windows_tray;
+  $("#setting-windows-hotkey").value = config.windows_hotkey || "disabled";
   $("#setting-low-disk").value = config.low_disk_free_gib;
   $("#setting-log-retention").value = config.log_retention_days;
   $("#setting-electricity").value = config.electricity_price_per_kwh;
   $("#setting-trusted-nodes").value = (config.trusted_nodes || []).join("\n");
+  renderIntegrationStatus();
 }
 
 function applyPlatformUi() {
@@ -2431,11 +2562,13 @@ function applyPlatformUi() {
     $("#setting-windows-field"),
   ];
   const wslOnly = [document.querySelector('[data-source="wsl"]'), $("#setting-wsl-field")];
+  const trayOnly = [$("#setting-tray-field"), $("#setting-hotkey-field"), $("#startup-card")];
   for (const element of windowsOnly) if (element) element.hidden = !capabilities.windows_services;
   for (const element of wslOnly) if (element) element.hidden = !capabilities.wsl;
+  for (const element of trayOnly) if (element) element.hidden = !capabilities.native_tray;
   if ((state.source === "windows_service" && !capabilities.windows_services) || (state.source === "wsl" && !capabilities.wsl)) {
-    state.source = "all";
-    $$("#source-tabs .chip").forEach((item) => item.classList.toggle("active", item.dataset.source === "all"));
+    state.source = "focus";
+    $$("#source-tabs .chip").forEach((item) => item.classList.toggle("active", item.dataset.source === "focus"));
   }
 }
 
@@ -2453,6 +2586,8 @@ async function saveSettings(event) {
     include_wsl: $("#setting-wsl").checked,
     enable_runtime_probes: $("#setting-runtime-probes").checked,
     enable_system_notifications: $("#setting-system-notifications").checked,
+    enable_windows_tray: $("#setting-windows-tray").checked,
+    windows_hotkey: $("#setting-windows-hotkey").value,
     low_disk_free_gib: Number($("#setting-low-disk").value),
     log_retention_days: Number($("#setting-log-retention").value),
     electricity_price_per_kwh: Number($("#setting-electricity").value),
@@ -2461,6 +2596,8 @@ async function saveSettings(event) {
   try {
     const payload = await api("/api/settings", { method: "POST", body: JSON.stringify(body) });
     state.config = payload.config;
+    state.integrations = payload.integrations || state.integrations;
+    renderIntegrationStatus();
     $("#settings-dialog").close();
     schedulePolling();
     showToast("设置已保存，正在重新扫描");
@@ -2481,6 +2618,115 @@ async function openAudit() {
     }
     $("#audit-dialog").showModal();
   } catch (error) { showToast(error.message, true); }
+}
+
+function renderNotifications() {
+  renderNotificationBadge();
+  const list = $("#notification-list");
+  const items = state.notifications?.items || [];
+  if (!items.length) {
+    list.innerHTML = '<div class="attention-empty">当前没有本机警告或严重提醒。</div>';
+    return;
+  }
+  const english = window.VSG_I18N?.locale === "en";
+  list.innerHTML = items.map((item) => `
+    <article class="notification-item ${escapeHtml(item.severity || "warning")} ${item.unread ? "" : "read"}">
+      <span class="notification-marker">${item.unread ? "●" : "○"}</span>
+      <strong>${escapeHtml(english ? item.title_en : item.title_zh)}</strong>
+      <time>${escapeHtml(formatDate(item.last_seen))}</time>
+      <small>${escapeHtml(item.project_name || "未归类项目")} · ${escapeHtml(item.code || "EVENT")} · ${escapeHtml(item.occurrences || 1)} 次</small>
+      ${item.unread ? `<button class="button button-small" type="button" data-notification-read="${escapeHtml(item.id)}">标记已读</button>` : ""}
+    </article>`).join("");
+}
+
+async function loadNotifications(openDialog = false) {
+  try {
+    const payload = await api("/api/notifications?limit=100");
+    state.notifications = payload;
+    renderNotifications();
+    if (openDialog && !$("#notification-dialog").open) $("#notification-dialog").showModal();
+  } catch (error) {
+    if (openDialog) showToast(error.message, true);
+  }
+}
+
+async function acknowledgeNotifications(ids = null) {
+  try {
+    const payload = await api("/api/notifications/acknowledge", {
+      method: "POST",
+      body: JSON.stringify(ids ? { ids } : { all: true }),
+    });
+    state.notifications = payload;
+    renderNotifications();
+    showToast(ids ? "提醒已标记为已读" : "全部本机提醒已标记为已读");
+  } catch (error) { showToast(error.message, true); }
+}
+
+function renderProjectCleanupPlan() {
+  const plan = state.cleanupPlan || {};
+  const summary = plan.summary || {};
+  $("#project-cleanup-summary").textContent = `项目 ${summary.projects || 0} · 推荐清理 ${summary.recommended || 0} · 可复核 ${summary.reviewable || 0} · 受保护/受管 ${summary.protected_or_managed || 0}`;
+  const list = $("#project-cleanup-list");
+  const plans = plan.plans || [];
+  if (!plans.length) {
+    list.innerHTML = '<div class="attention-empty">当前快照没有可生成清理计划的服务。</div>';
+    return;
+  }
+  list.innerHTML = plans.map((project) => `
+    <section class="cleanup-project">
+      <header><strong>${escapeHtml(project.project_name)}</strong><span>推荐 ${escapeHtml(project.summary.recommended)} · 可复核 ${escapeHtml(project.summary.reviewable)} · 受保护/受管 ${escapeHtml(project.summary.protected_or_managed)}</span></header>
+      ${(project.items || []).map((item) => `
+        <div class="cleanup-item">
+          <strong>${escapeHtml(item.display_name)} · PID ${escapeHtml(item.pid || "—")} ${item.recommended ? '<span class="risk-badge stale">推荐清理</span>' : ""}</strong>
+          <small>${escapeHtml(item.decision === "blocked" ? (item.blockers?.[0] || "受保护或由生命周期管理器托管") : `端点 ${item.endpoint_count} · 本机客户端 ${item.client_count} · ${item.requires_confirmation || "需重新评估"}`)}</small>
+          <button class="button button-small" type="button" data-cleanup-service="${escapeHtml(item.service_id)}">${item.can_request_stop ? "重新评估并确认" : "查看建议路径"}</button>
+        </div>`).join("")}
+    </section>`).join("");
+}
+
+async function openProjectCleanup() {
+  try {
+    const payload = await api("/api/projects/cleanup-plans");
+    state.cleanupPlan = payload.plan;
+    renderProjectCleanupPlan();
+    $("#project-cleanup-dialog").showModal();
+  } catch (error) { showToast(error.message, true); }
+}
+
+async function completeOnboarding() {
+  try {
+    const payload = await api("/api/onboarding/complete", {
+      method: "POST",
+      body: JSON.stringify({ completed: true }),
+    });
+    state.config = payload.config;
+    state.onboarding = payload.onboarding;
+    renderOnboarding();
+    showToast("首次使用检查已完成；可随时在设置中调整扫描范围");
+  } catch (error) { showToast(error.message, true); }
+}
+
+function confirmExit() {
+  state.confirmationAction = { kind: "exit", phrase: "EXIT VSG" };
+  openConfirmationDialog(
+    "安全退出 VSG",
+    "退出会停止本机采集，并中止正在进行的观察或工作负载；不会停止任何被监控服务。",
+    "EXIT VSG",
+  );
+}
+
+function confirmStartupToggle() {
+  const startup = state.integrations?.startup || {};
+  const enabled = !(startup.enabled && startup.managed_by_current_executable);
+  const phrase = enabled ? "ENABLE STARTUP" : "DISABLE STARTUP";
+  state.confirmationAction = { kind: "startup", enabled, phrase };
+  openConfirmationDialog(
+    enabled ? "启用当前用户开机启动" : "禁用当前用户开机启动",
+    enabled
+      ? "仅写入当前用户 Run 项，启动当前便携 EXE；不提权、不安装系统服务。"
+      : "只删除由当前便携 EXE 管理的 VSG 启动项。",
+    phrase,
+  );
 }
 
 function impactMetric(title, value, detail) {
@@ -2556,9 +2802,15 @@ async function loadStatus() {
     state.snapshot = payload.snapshot;
     state.config = payload.config;
     state.platform = payload.platform || payload.snapshot?.platform || state.platform;
+    state.instance = payload.instance || state.instance;
+    state.onboarding = payload.onboarding || state.onboarding;
+    state.integrations = payload.integrations || state.integrations;
     applyPlatformUi();
+    renderInstanceStatus();
+    renderOnboarding();
+    renderIntegrationStatus();
     render();
-    await loadStopObservations();
+    await Promise.all([loadStopObservations(), loadNotifications(false)]);
   } catch (error) {
     showToast(`状态读取失败：${error.message}`, true);
   }
@@ -2596,6 +2848,10 @@ function handleHealthAction(event) {
 function bindEvents() {
   document.addEventListener("vsg:localechange", () => {
     applyPlatformUi();
+    renderInstanceStatus();
+    renderOnboarding();
+    renderNotifications();
+    if (state.cleanupPlan) renderProjectCleanupPlan();
     if (state.snapshot) render();
     if (state.plannerStatus) {
       renderHardware();
@@ -2614,8 +2870,28 @@ function bindEvents() {
     if (dialog?.open) dialog.close("cancel");
   });
   $("#service-body").addEventListener("click", handleRowAction);
+  $("#attention-list").addEventListener("click", handleAttentionAction);
+  $("#attention-show-all").addEventListener("click", showAllServices);
   $("#detail-content").addEventListener("click", handleImpactFeedback);
   $("#refresh-button").addEventListener("click", refreshNow);
+  $("#notification-button").addEventListener("click", () => loadNotifications(true));
+  $("#notification-read-all").addEventListener("click", () => acknowledgeNotifications());
+  $("#notification-list").addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-notification-read]");
+    if (button) acknowledgeNotifications([Number(button.dataset.notificationRead)]);
+  });
+  $("#project-cleanup-button").addEventListener("click", openProjectCleanup);
+  $("#project-cleanup-list").addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-cleanup-service]");
+    if (!button) return;
+    const service = state.snapshot?.services?.find((item) => item.id === button.dataset.cleanupService);
+    if (!service) return showToast("服务快照已变化，请刷新后重试", true);
+    $("#project-cleanup-dialog").close();
+    openStopDialog(service);
+  });
+  $("#exit-button").addEventListener("click", confirmExit);
+  $("#onboarding-settings").addEventListener("click", () => { fillSettings(); $("#settings-dialog").showModal(); });
+  $("#onboarding-complete").addEventListener("click", completeOnboarding);
   $("#settings-button").addEventListener("click", () => { fillSettings(); $("#settings-dialog").showModal(); });
   $("#audit-button").addEventListener("click", openAudit);
   $("#impact-report-button").addEventListener("click", openImpactReport);
@@ -2636,6 +2912,7 @@ function bindEvents() {
   $("#stop-observation-cancel").addEventListener("click", handleStopObservationButton);
   $("#settings-form").addEventListener("submit", saveSettings);
   $("#settings-cancel").addEventListener("click", () => $("#settings-dialog").close());
+  $("#startup-toggle").addEventListener("click", confirmStartupToggle);
   $("#attribution-form").addEventListener("submit", submitAttribution);
   $("#attribution-cancel").addEventListener("click", () => $("#attribution-dialog").close());
   $("#attribution-clear-label").addEventListener("click", clearLifecycleLabel);
@@ -2735,9 +3012,16 @@ async function init() {
     const bootstrap = await api("/api/bootstrap");
     state.token = bootstrap.token;
     state.platform = bootstrap.platform || null;
+    state.instance = bootstrap.instance || { version: bootstrap.version, started_at: bootstrap.started_at };
+    state.onboarding = bootstrap.onboarding || null;
+    state.integrations = bootstrap.integrations || null;
     applyPlatformUi();
+    renderInstanceStatus();
+    renderOnboarding();
+    renderIntegrationStatus();
     await loadStatus();
     schedulePolling();
+    if (location.hash === "#today-focus") $("#today-focus").scrollIntoView({ block: "start" });
   } catch (error) {
     $("#loading-state").textContent = `控制台初始化失败：${error.message}`;
     showToast(error.message, true);

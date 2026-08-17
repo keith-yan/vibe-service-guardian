@@ -15,7 +15,7 @@ from .project_rules import infer_rule_scope, rule_specificity
 
 
 MAX_BENCHMARK_DETAILS_CHARS = 30_000
-CURRENT_SCHEMA_VERSION = 6
+CURRENT_SCHEMA_VERSION = 7
 MAX_ATTRIBUTION_RULE_VERSIONS = 5
 
 
@@ -327,10 +327,13 @@ CREATE TABLE IF NOT EXISTS timeline_events (
     title_en TEXT NOT NULL,
     details_json TEXT NOT NULL,
     dedup_key TEXT NOT NULL,
-    occurrences INTEGER NOT NULL DEFAULT 1
+    occurrences INTEGER NOT NULL DEFAULT 1,
+    acknowledged_at REAL
 );
 CREATE INDEX IF NOT EXISTS timeline_recent ON timeline_events(last_seen DESC);
 CREATE INDEX IF NOT EXISTS timeline_service ON timeline_events(service_fingerprint, last_seen DESC);
+CREATE INDEX IF NOT EXISTS timeline_notification
+    ON timeline_events(severity, acknowledged_at, last_seen DESC);
 CREATE TABLE IF NOT EXISTS telemetry_samples (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     observed_at REAL NOT NULL,
@@ -477,6 +480,7 @@ class Storage:
             ("attribution_rules", "override_count", "INTEGER NOT NULL DEFAULT 0"),
             ("attribution_rules", "last_override_at", "REAL"),
             ("attribution_rules", "needs_review", "INTEGER NOT NULL DEFAULT 0"),
+            ("timeline_events", "acknowledged_at", "REAL"),
         ):
             self._ensure_column(table, column, definition)
 
@@ -580,6 +584,14 @@ class Storage:
             return
         if target_version == 6:
             self._migrate_attribution_rules_v6()
+            return
+        if target_version == 7:
+            # Existing v6 databases already contain timeline_events.  Add the
+            # column before executing SCHEMA because the new unread index
+            # references it.
+            self._ensure_column("timeline_events", "acknowledged_at", "REAL")
+            self._execute_schema()
+            self._ensure_additive_columns()
             return
         raise StorageVersionError(f"没有数据库版本 {target_version} 的迁移程序")
 
@@ -1579,6 +1591,88 @@ class Storage:
             item.pop("dedup_key", None)
             result.append(item)
         return result
+
+    def notification_center(self, limit: int = 100) -> dict[str, Any]:
+        """Return deduplicated local alerts without exposing internal keys."""
+
+        limit = max(1, min(int(limit), 500))
+        with self._lock:
+            rows = self._connection.execute(
+                """
+                SELECT * FROM timeline_events
+                WHERE severity IN ('warning', 'critical')
+                ORDER BY last_seen DESC LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            unread_count = int(
+                self._connection.execute(
+                    """
+                    SELECT COUNT(*) FROM timeline_events
+                    WHERE severity IN ('warning', 'critical')
+                      AND (acknowledged_at IS NULL OR last_seen > acknowledged_at)
+                    """
+                ).fetchone()[0]
+                or 0
+            )
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["details"] = json.loads(item.pop("details_json") or "{}")
+            except (json.JSONDecodeError, TypeError):
+                item["details"] = {}
+            item.pop("dedup_key", None)
+            acknowledged_at = item.get("acknowledged_at")
+            item["unread"] = acknowledged_at is None or float(item["last_seen"]) > float(
+                acknowledged_at
+            )
+            items.append(item)
+        return {
+            "items": items,
+            "unread_count": unread_count,
+            "retention": "local_timeline",
+            "network_used": False,
+        }
+
+    def acknowledge_notifications(
+        self,
+        event_ids: Iterable[int] | None = None,
+        *,
+        acknowledge_all: bool = False,
+    ) -> int:
+        """Mark local warning/critical events read; newer dedup hits become unread."""
+
+        now = time.time()
+        with self._lock, self._connection:
+            if acknowledge_all:
+                cursor = self._connection.execute(
+                    """
+                    UPDATE timeline_events SET acknowledged_at = ?
+                    WHERE severity IN ('warning', 'critical')
+                      AND (acknowledged_at IS NULL OR last_seen > acknowledged_at)
+                    """,
+                    (now,),
+                )
+                return max(0, int(cursor.rowcount or 0))
+            normalized = sorted(
+                {
+                    int(value)
+                    for value in (event_ids or [])
+                    if not isinstance(value, bool) and int(value) > 0
+                }
+            )[:500]
+            if not normalized:
+                return 0
+            placeholders = ",".join("?" for _ in normalized)
+            cursor = self._connection.execute(
+                f"""
+                UPDATE timeline_events SET acknowledged_at = ?
+                WHERE id IN ({placeholders}) AND severity IN ('warning', 'critical')
+                """,  # nosec B608 - placeholders are generated from a bounded integer list.
+                [now, *normalized],
+            )
+            return max(0, int(cursor.rowcount or 0))
 
     def add_telemetry_sample(self, sample: dict[str, Any]) -> int:
         with self._lock, self._connection:

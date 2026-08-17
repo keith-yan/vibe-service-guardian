@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>Vibe Service Guardian</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%232f73db'/%3E%3Cpath d='M16 18h32v9H25v10h23v9H16z' fill='white'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/assets/styles.css">
 </head>
 <body>
@@ -18,6 +19,7 @@
           <span class="english-title">SERVICES</span>
         </div>
         <p>追踪本机监听端口、项目与 Agent 会话，识别疑似遗留开发服务 <span id="platform-badge" class="source-badge">正在识别平台</span></p>
+        <div class="instance-strip" aria-label="当前实例"><span id="instance-version">VSG —</span><span id="instance-pid">PID —</span><span id="instance-port">127.0.0.1:—</span><span id="instance-uptime">启动时间 —</span></div>
       </div>
       <div class="hero-actions">
         <label class="search-box" id="service-search-box">
@@ -28,9 +30,12 @@
         </label>
         <div class="action-row" id="service-action-row">
           <button class="button language-toggle" id="language-toggle" type="button" aria-label="切换到英文" title="切换到英文">EN</button>
+          <button class="button notification-button" id="notification-button" type="button">提醒 <span id="notification-badge" class="notification-badge" hidden>0</span></button>
+          <button class="button" id="project-cleanup-button" type="button">项目安全清理</button>
           <button class="button" id="impact-report-button" type="button">本机成效</button>
           <button class="button" id="audit-button" type="button">操作记录</button>
           <button class="button" id="settings-button" type="button">设置</button>
+          <button class="button" id="exit-button" type="button">安全退出</button>
           <button class="button button-primary" id="refresh-button" type="button">刷新状态</button>
         </div>
       </div>
@@ -43,6 +48,12 @@
       <button class="workspace-tab" type="button" data-view="advisor" aria-controls="advisor-view" aria-selected="false">优化与引擎建议</button>
       <button class="workspace-tab" type="button" data-view="operations" aria-controls="operations-view" aria-selected="false">事件与模型资产</button>
     </nav>
+
+    <section class="onboarding-panel" id="onboarding-panel" hidden>
+      <div><div class="eyebrow"><span class="eyebrow-square"></span> FIRST USE · 首次使用检查</div><h2>先确认扫描范围与本机安全边界</h2><p>检查仅使用本机证据，不联网、不读取环境变量，也不会自动停止任何服务。</p></div>
+      <div class="onboarding-checks" id="onboarding-checks"></div>
+      <div class="onboarding-actions"><button class="button" id="onboarding-settings" type="button">检查项目根目录</button><button class="button button-primary" id="onboarding-complete" type="button">我已了解，进入控制台</button></div>
+    </section>
 
     <section class="observation-bar" id="stop-observation-bar" role="status" aria-live="polite" hidden>
       <div><strong id="stop-observation-title">正在持续观察停止结果</strong><span id="stop-observation-summary"></span></div>
@@ -59,6 +70,27 @@
         <article class="summary-card"><span class="summary-icon amber">!</span><div><span>需要复核</span><strong id="metric-review">—</strong><small>规则评分提示</small></div></article>
         <article class="summary-card"><span class="summary-icon slate">◷</span><div><span>系统负载</span><strong id="metric-load">—</strong><small>CPU / 内存</small></div></article>
         <article class="summary-card"><span class="summary-icon slate">↻</span><div><span>最后更新</span><strong class="time-value" id="metric-updated">—</strong><small id="metric-duration">等待采集</small></div></article>
+      </section>
+
+      <section class="attention-panel" id="today-focus" aria-label="今日关注">
+        <div class="attention-heading">
+          <div>
+            <div class="eyebrow"><span class="eyebrow-square"></span> TODAY · 今日关注</div>
+            <h2>先看需要处理的，再看完整清单</h2>
+            <p>这里只做视图降噪，不隐藏原始证据，也不会改变风险评分或停止保护。</p>
+          </div>
+          <button class="button button-small" id="attention-show-all" type="button">查看全部服务</button>
+        </div>
+        <div class="attention-metrics" aria-label="今日关注摘要">
+          <div><span>待处理发现</span><strong id="attention-needs-action">—</strong></div>
+          <div><span>可进入关停确认</span><strong id="attention-can-stop">—</strong></div>
+          <div><span>受管建议路径</span><strong id="attention-guidance">—</strong></div>
+          <div><span>模型运行实例</span><strong id="attention-runtimes">—</strong></div>
+        </div>
+        <div class="attention-content">
+          <div class="attention-list" id="attention-list"><span class="confidence-note">正在生成今日关注摘要…</span></div>
+          <div class="runtime-glance" id="runtime-glance"><span class="confidence-note">正在读取本地推理运行时…</span></div>
+        </div>
       </section>
 
       <section class="collector-strip" id="collector-strip" aria-label="采集器状态"></section>
@@ -88,7 +120,8 @@
 
         <div class="filter-bar" role="toolbar" aria-label="服务过滤器">
           <div class="filter-tabs" id="source-tabs">
-            <button class="chip active" data-source="all" type="button">全部 <span id="count-all">0</span></button>
+            <button class="chip active" data-source="focus" type="button">今日关注 <span id="count-focus">0</span></button>
+            <button class="chip" data-source="all" type="button">全部 <span id="count-all">0</span></button>
             <button class="chip" data-source="host" type="button">宿主机 <span id="count-host">0</span></button>
             <button class="chip" data-source="agent" type="button">Agent 进程 <span id="count-agent">0</span></button>
             <button class="chip" data-source="model_runtime" type="button">模型推理 <span id="count-model-runtime">0</span></button>
@@ -423,13 +456,13 @@
 
   <dialog id="stop-dialog" class="modal modal-wide">
     <form method="dialog" class="modal-frame" id="stop-form">
-      <header><div><span class="modal-kicker danger-text">DESTRUCTIVE ACTION</span><h2>停止进程树</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="关闭">×</button></header>
+      <header><div><span class="modal-kicker danger-text" id="stop-dialog-kicker">DESTRUCTIVE ACTION</span><h2 id="stop-dialog-title">停止进程树</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="关闭">×</button></header>
       <div class="modal-content">
         <div class="warning-box" id="stop-summary">正在生成关停评估…</div>
         <div class="stop-assessment" id="stop-assessment"></div>
         <label class="field" id="stop-observation-field"><span>停止后持续观察</span><select id="stop-observation-minutes"><option value="5">5 分钟</option><option value="15" selected>15 分钟（推荐）</option><option value="30">30 分钟</option></select></label>
         <label class="field" id="stop-confirmation-field"><span id="stop-prompt">请输入确认短语</span><input id="stop-confirmation" autocomplete="off" spellcheck="false"></label>
-        <p class="help-text">系统将在执行前再次校验 PID、启动时间、保护名单和目标来源。停止无法撤销；观察可随时中止，复活后不会自动二次停止。</p>
+        <p class="help-text" id="stop-dialog-help">系统将在执行前再次校验 PID、启动时间、保护名单和目标来源。停止无法撤销；观察可随时中止，复活后不会自动二次停止。</p>
         <div class="stop-verification" id="stop-verification" hidden></div>
       </div>
       <footer><button class="button" value="cancel" type="button" id="stop-cancel">关闭</button><button class="button button-danger" id="stop-submit" type="submit" disabled>停止并观察</button></footer>
@@ -507,6 +540,22 @@
     </form>
   </dialog>
 
+  <dialog id="notification-dialog" class="modal modal-wide">
+    <form method="dialog" class="modal-frame">
+      <header><div><span class="modal-kicker">LOCAL NOTIFICATION CENTER</span><h2>本机提醒中心</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="关闭">×</button></header>
+      <div class="modal-content"><p class="help-text">仅展示本机时间线中的警告和严重事件；相同事件自动去重，标记已读后若再次发生会重新变为未读。</p><div id="notification-list" class="notification-list"></div></div>
+      <footer><button class="button" id="notification-read-all" type="button">全部标记已读</button><button class="button" value="cancel">关闭</button></footer>
+    </form>
+  </dialog>
+
+  <dialog id="project-cleanup-dialog" class="modal modal-wide">
+    <form method="dialog" class="modal-frame">
+      <header><div><span class="modal-kicker">PROJECT SAFE CLEANUP PLAN</span><h2>按项目安全清理建议</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="关闭">×</button></header>
+      <div class="modal-content"><div class="warning-box">这里只生成当前快照的影响预览，不提供静默批量停止。每个候选仍须重新评估并单独输入 STOP &lt;PID&gt;，随后进入持续观察。</div><div id="project-cleanup-summary" class="cleanup-summary"></div><div id="project-cleanup-list" class="cleanup-list"></div></div>
+      <footer><button class="button" value="cancel">关闭</button></footer>
+    </form>
+  </dialog>
+
   <dialog id="settings-dialog" class="modal modal-wide">
     <form method="dialog" class="modal-frame" id="settings-form">
       <header><div><span class="modal-kicker">LOCAL SETTINGS</span><h2>本机扫描设置</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="关闭">×</button></header>
@@ -522,6 +571,9 @@
         <label class="check-field" id="setting-wsl-field"><input id="setting-wsl" type="checkbox"><span>展示运行中的 WSL</span></label>
         <label class="check-field"><input id="setting-runtime-probes" type="checkbox"><span>启用模型运行时只读探测</span></label>
         <label class="check-field"><input id="setting-system-notifications" type="checkbox"><span>复活时显示操作系统本机通知（可选）</span></label>
+        <label class="check-field" id="setting-tray-field"><input id="setting-windows-tray" type="checkbox"><span>Windows 托盘常驻（可选，默认关闭）</span></label>
+        <label class="field" id="setting-hotkey-field"><span>全局快捷键</span><select id="setting-windows-hotkey"><option value="disabled">关闭（默认）</option><option value="ctrl_alt_g">Ctrl+Alt+G</option></select></label>
+        <div class="startup-card field-full" id="startup-card"><div><strong>当前用户开机启动</strong><span id="startup-status">正在检查；默认不会启用</span></div><button class="button button-small" id="startup-toggle" type="button">配置开机启动</button></div>
         <label class="field"><span>低磁盘空间阈值（GiB）</span><input id="setting-low-disk" type="number" min="1" max="4096"></label>
         <label class="field"><span>脱敏日志事件保留天数</span><input id="setting-log-retention" type="number" min="1" max="90"></label>
         <label class="field"><span>电价（每 kWh，仅用于 GPU 实测功耗积分）</span><input id="setting-electricity" type="number" min="0" max="100" step="0.01"></label>

@@ -8,6 +8,50 @@ fi
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 cd "$PROJECT_ROOT"
+
+TOP_LEVEL_PACKAGE_FILES=(
+  Start-VSG.command Stop-VSG.command Open-VSG.command
+  README.md README.en.md SECURITY.md PRIVACY.md THIRD_PARTY_NOTICES.md LICENSE
+  CHANGELOG.md SUPPORT.md MACOS-VALIDATION.md LINUX-VALIDATION.md
+  IMPACT.md MAINTAINERS.md ROADMAP.md GOVERNANCE.md
+)
+DOC_PACKAGE_FILES=(
+  docs/AGENT-SUPPORT.md docs/ARCHITECTURE.md docs/MODEL-CAPACITY.md
+  docs/V0.8-FEATURES.md docs/V0.8.1-FEATURES.md docs/V0.8.2-HARDENING.md
+  docs/PRODUCTION-READINESS-0.8.2.md docs/V0.8.3-CONVERGENCE.md
+  docs/PRODUCTION-READINESS-0.8.3.md docs/V0.8.4-P0-CLOSURE.md
+  docs/PRODUCTION-READINESS-0.8.4.md docs/V0.8.5-P2-A.md
+  docs/PRODUCTION-READINESS-0.8.5.md docs/V0.8.5.1-DAILY-USE.md
+  docs/V0.8.5.2-P1-DAILY-WORKFLOW.md docs/PRODUCTION-READINESS-0.8.5.2.md
+  docs/VALIDATION.md docs/EVIDENCE-REGISTER.md
+)
+CASE_STUDY_FILES=(
+  docs/case-studies/README.md docs/case-studies/maintainer-validation.md
+  docs/case-studies/macos-vm-preview-0.8.5.2.md
+)
+BUILD_INPUT_FILES=(
+  pyproject.toml VibeServiceGuardian.spec
+  requirements.txt requirements-audit.txt requirements-bootstrap.txt
+  requirements-build.txt requirements-build-linux.txt requirements-build-macos.txt
+  requirements-lock/manifest.json requirements-lock/bootstrap-py3.txt
+  scripts/Requirement-Locks.py scripts/Audit-Public-Tree.py
+  scripts/Collect-ThirdPartyLicenses.py scripts/Validate-Archive.py
+  scripts/Validate-macOS.sh research/GITHUB_RESEARCH.md docs/assets/vsg-overview.svg
+  "${TOP_LEVEL_PACKAGE_FILES[@]}" "${DOC_PACKAGE_FILES[@]}" "${CASE_STUDY_FILES[@]}"
+)
+for required_file in "${BUILD_INPUT_FILES[@]}"; do
+  [ -f "$required_file" ] || {
+    printf '构建输入缺失：%s\n' "$required_file"
+    exit 2
+  }
+done
+for required_directory in vsg tests requirements-lock; do
+  [ -d "$required_directory" ] || {
+    printf '构建输入目录缺失：%s\n' "$required_directory"
+    exit 2
+  }
+done
+
 ARCH="$(uname -m)"
 case "$ARCH" in
   arm64) PACKAGE_ARCH="arm64" ;;
@@ -29,6 +73,10 @@ BUILD_VENV="$PROJECT_ROOT/.venv-build-macos-$PACKAGE_ARCH"
 "$PYTHON_BIN" -m venv "$BUILD_VENV"
 PY_TAG="$("$BUILD_VENV/bin/python3" -c 'import sys; print(f"py{sys.version_info.major}{sys.version_info.minor}")')"
 case "$PY_TAG" in py310|py311|py312) ;; *) printf '不支持的 Python 锁版本：%s\n' "$PY_TAG"; exit 2 ;; esac
+[ -f "requirements-lock/build-macos-$PY_TAG.txt" ] || {
+  printf '缺少当前 Python 的 macOS 构建锁：requirements-lock/build-macos-%s.txt\n' "$PY_TAG"
+  exit 2
+}
 "$BUILD_VENV/bin/python3" -m pip install --disable-pip-version-check --only-binary=:all: \
   --no-deps --require-hashes --requirement requirements-lock/bootstrap-py3.txt
 "$BUILD_VENV/bin/python3" -m pip install --disable-pip-version-check --only-binary=:all: \
@@ -40,10 +88,11 @@ if [ "$PYTHON_ARCH" != "$PACKAGE_ARCH" ]; then
   exit 2
 fi
 VERSION="$("$BUILD_VENV/bin/python3" -c 'from vsg import __version__; print(__version__)')"
-case "$VERSION" in
-  [0-9]*.[0-9]*.[0-9]*) ;;
-  *) printf '无效版本号：%s\n' "$VERSION"; exit 2 ;;
-esac
+printf '%s\n' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$' || {
+  printf '无效版本号：%s\n' "$VERSION"
+  exit 2
+}
+"$BUILD_VENV/bin/python3" scripts/Collect-ThirdPartyLicenses.py --verify-only
 "$BUILD_VENV/bin/python3" scripts/Audit-Public-Tree.py --root "$PROJECT_ROOT"
 "$BUILD_VENV/bin/python3" -m unittest discover -s tests -v
 VSG_TARGET_ARCH="$PACKAGE_ARCH" "$BUILD_VENV/bin/python3" -m PyInstaller \
@@ -68,22 +117,12 @@ fi
 mkdir -p "$PORTABLE_ROOT/research" "$PORTABLE_ROOT/scripts"
 
 cp dist/VibeServiceGuardian "$PORTABLE_ROOT/VibeServiceGuardian"
-cp Start-VSG.command Stop-VSG.command Open-VSG.command \
-  README.md README.en.md SECURITY.md PRIVACY.md THIRD_PARTY_NOTICES.md LICENSE \
-  CHANGELOG.md SUPPORT.md MACOS-VALIDATION.md LINUX-VALIDATION.md \
-  IMPACT.md MAINTAINERS.md ROADMAP.md GOVERNANCE.md "$PORTABLE_ROOT/"
+cp "${TOP_LEVEL_PACKAGE_FILES[@]}" "$PORTABLE_ROOT/"
 cp research/GITHUB_RESEARCH.md "$PORTABLE_ROOT/research/"
 cp scripts/Validate-macOS.sh "$PORTABLE_ROOT/scripts/"
 mkdir -p "$PORTABLE_ROOT/docs" "$PORTABLE_ROOT/docs/case-studies" "$PORTABLE_ROOT/docs/assets"
-cp docs/AGENT-SUPPORT.md docs/ARCHITECTURE.md docs/MODEL-CAPACITY.md \
-  docs/V0.8-FEATURES.md docs/V0.8.1-FEATURES.md docs/V0.8.2-HARDENING.md \
-  docs/PRODUCTION-READINESS-0.8.2.md docs/V0.8.3-CONVERGENCE.md \
-  docs/PRODUCTION-READINESS-0.8.3.md docs/V0.8.4-P0-CLOSURE.md \
-  docs/PRODUCTION-READINESS-0.8.4.md docs/V0.8.5-P2-A.md \
-  docs/PRODUCTION-READINESS-0.8.5.md docs/VALIDATION.md docs/EVIDENCE-REGISTER.md \
-  "$PORTABLE_ROOT/docs/"
-cp docs/case-studies/README.md docs/case-studies/maintainer-validation.md \
-  "$PORTABLE_ROOT/docs/case-studies/"
+cp "${DOC_PACKAGE_FILES[@]}" "$PORTABLE_ROOT/docs/"
+cp "${CASE_STUDY_FILES[@]}" "$PORTABLE_ROOT/docs/case-studies/"
 cp docs/assets/vsg-overview.svg "$PORTABLE_ROOT/docs/assets/"
 "$BUILD_VENV/bin/python3" scripts/Collect-ThirdPartyLicenses.py \
   --output "$PORTABLE_ROOT/THIRD_PARTY_LICENSES" \

@@ -17,5 +17,10 @@ htmlcov/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.vsg-bootstrap-cache/
+acceptance-results/
+macos-vm-test-project/
+VSG-macOS-*-VM-evidence-*.zip
+VSG-macOS-*-VM-evidence-*.zip.sha256
 .DS_Store
 Thumbs.db

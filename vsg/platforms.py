@@ -125,6 +125,9 @@ def platform_info(
             "desktop_launcher": key in {"windows", "macos", "linux"},
             "docker": key in {"windows", "macos", "linux"},
             "open_project_path": key in {"windows", "macos", "linux"},
+            "native_tray": key == "windows",
+            "current_user_startup": key == "windows",
+            "global_hotkey": key == "windows",
         },
     }
 

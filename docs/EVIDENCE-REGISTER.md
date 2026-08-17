@@ -10,10 +10,11 @@ This register prevents code verification from being misrepresented as user adopt
 | VSG-E004 | Engineering | Old databases are backed up and migrated transactionally; corrupt files are quarantined | `tests/test_storage_migrations.py` | Available | Current-host SQLite behavior |
 | VSG-E005 | Product evidence path | Human stale/not-stale/uncertain outcomes are deduplicated and can be explicitly exported as aggregate JSON | `tests/test_impact.py`, local Web console | Available | Local self-report, retention-bounded, no automatic upload |
 | VSG-E006 | Maintainer self-test | Current owner can reproduce bounded end-to-end behavior | `docs/case-studies/maintainer-validation.md` | Available | Not an independent adopter |
-| VSG-E007 | Native platform | Apple Silicon and Intel macOS acceptance | `MACOS-VALIDATION.md` | Missing | Must run on real Macs |
+| VSG-E007 | Native platform preview | macOS 13.7.8 x86_64 VMware guest can build the native package and pass automated native validation | [`case-studies/macos-vm-preview-0.8.5.2.md`](case-studies/macos-vm-preview-0.8.5.2.md) | Partial | AMD-hosted VM; manual UI evidence and r9 target rerun are incomplete; does not cover physical Intel Mac or Apple Silicon |
 | VSG-E008 | Native platform | Linux x86_64 and arm64 graphical acceptance | `LINUX-VALIDATION.md` | Missing | Must run on real target machines |
 | VSG-E009 | Independent outcome | External user case study with consent and redacted evidence | `docs/case-studies/` | Missing | Cannot be replaced by maintainer testing |
 | VSG-E010 | Public ecosystem | Public releases, contributors, issues/PRs, downloads, dependents, citations | [`keith-yan/vibe-service-guardian`](https://github.com/keith-yan/vibe-service-guardian) | Partial | Repository existence proves publication/control only; no release or adoption evidence yet |
+| VSG-E011 | Engineering | P1 project cleanup remains per-service, local alerts migrate safely, and optional Windows desktop integration defaults off | `tests/test_v0852_p1.py`, `docs/VALIDATION.md` | Available | Current Windows host and synthetic/local evidence; no long-term user or native macOS/Linux result |
 
 ## Rules
 

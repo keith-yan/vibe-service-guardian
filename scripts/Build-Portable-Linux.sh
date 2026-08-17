@@ -26,6 +26,10 @@ case "$PY_TAG" in py310|py311|py312) ;; *) printf 'Unsupported Python lock versi
   --no-deps --require-hashes --requirement "requirements-lock/build-linux-$PY_TAG.txt"
 "$BUILD_VENV/bin/python3" scripts/Requirement-Locks.py --verify
 VERSION=$("$BUILD_VENV/bin/python3" -c 'from vsg import __version__; print(__version__)')
+printf '%s\n' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$' || {
+  printf 'Invalid application version: %s\n' "$VERSION"
+  exit 2
+}
 "$BUILD_VENV/bin/python3" scripts/Audit-Public-Tree.py --root "$PROJECT_ROOT"
 "$BUILD_VENV/bin/python3" -m unittest discover -s tests -v
 "$BUILD_VENV/bin/python3" -m PyInstaller --noconfirm --clean VibeServiceGuardian.spec
@@ -50,10 +54,13 @@ cp docs/AGENT-SUPPORT.md docs/ARCHITECTURE.md docs/MODEL-CAPACITY.md \
   docs/PRODUCTION-READINESS-0.8.2.md docs/V0.8.3-CONVERGENCE.md \
   docs/PRODUCTION-READINESS-0.8.3.md docs/V0.8.4-P0-CLOSURE.md \
   docs/PRODUCTION-READINESS-0.8.4.md docs/V0.8.5-P2-A.md \
-  docs/PRODUCTION-READINESS-0.8.5.md docs/VALIDATION.md docs/EVIDENCE-REGISTER.md \
+  docs/PRODUCTION-READINESS-0.8.5.md docs/V0.8.5.1-DAILY-USE.md \
+  docs/V0.8.5.2-P1-DAILY-WORKFLOW.md docs/PRODUCTION-READINESS-0.8.5.2.md \
+  docs/VALIDATION.md docs/EVIDENCE-REGISTER.md \
   "$PORTABLE_ROOT/docs/"
 mkdir -p "$PORTABLE_ROOT/docs/case-studies" "$PORTABLE_ROOT/docs/assets"
 cp docs/case-studies/README.md docs/case-studies/maintainer-validation.md \
+  docs/case-studies/macos-vm-preview-0.8.5.2.md \
   "$PORTABLE_ROOT/docs/case-studies/"
 cp docs/assets/vsg-overview.svg "$PORTABLE_ROOT/docs/assets/"
 "$BUILD_VENV/bin/python3" scripts/Collect-ThirdPartyLicenses.py \

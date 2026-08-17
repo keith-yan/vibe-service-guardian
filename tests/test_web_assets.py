@@ -184,6 +184,21 @@ class WebAssetTests(unittest.TestCase):
         self.assertIn("data-impact-outcome", script)
         self.assertIn('value="impact_feedback"', html)
 
+    def test_daily_attention_and_actionable_service_controls_are_present(self):
+        html = resources.files("vsg").joinpath("web", "index.html").read_text(encoding="utf-8")
+        script = resources.files("vsg").joinpath("web", "app.js").read_text(encoding="utf-8")
+        for element_id in (
+            "attention-list",
+            "runtime-glance",
+            "attention-show-all",
+            "count-focus",
+        ):
+            self.assertIn(f'id="{element_id}"', html)
+        self.assertIn('source: "focus"', script)
+        self.assertIn("建议路径", script)
+        self.assertIn("READ-ONLY GUIDANCE", script)
+        self.assertNotIn('data-action="stop" title="停止进程树" disabled', script)
+
 
 if __name__ == "__main__":
     unittest.main()

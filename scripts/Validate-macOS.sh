@@ -12,6 +12,11 @@ TEMP_BASE="${TMPDIR:-/tmp}"
 TEMP_BASE="${TEMP_BASE%/}"
 TEMP_ROOT="$(mktemp -d "$TEMP_BASE/vsg-macos-validation.XXXXXX")"
 DATA_DIR="$TEMP_ROOT/data"
+PYTHON_HELPER="${PYTHON_BIN:-python3}"
+command -v "$PYTHON_HELPER" >/dev/null 2>&1 || {
+  printf '未找到验收辅助 Python：%s\n' "$PYTHON_HELPER"
+  exit 2
+}
 
 cleanup() {
   if [ -n "${APP_PID:-}" ]; then
@@ -44,7 +49,7 @@ APP_PID=$!
 
 for ((attempt=0; attempt<240; attempt++)); do
   if [ -f "$DATA_DIR/runtime.json" ]; then
-    if python3 - "$DATA_DIR" >/dev/null 2>&1 <<'PY'
+    if "$PYTHON_HELPER" - "$DATA_DIR" >/dev/null 2>&1 <<'PY'
 import json
 import sys
 import urllib.request
@@ -69,7 +74,7 @@ PY
   sleep 0.25
 done
 
-python3 - "$DATA_DIR" <<'PY'
+"$PYTHON_HELPER" - "$DATA_DIR" <<'PY'
 import json
 import sys
 import time

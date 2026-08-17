@@ -25,6 +25,26 @@ class OllamaHandler(BaseHTTPRequestHandler):
             }
         elif self.path == "/api/version":
             payload = {"version": "0.test"}
+        elif self.path == "/health":
+            payload = {"status": "ok"}
+        elif self.path == "/props":
+            payload = {"model_path": "/models/qwen.Q5_K_M.gguf", "n_ctx": 16384}
+        elif self.path == "/slots":
+            payload = [{"id": 0, "is_processing": True}, {"id": 1, "is_processing": False}]
+        elif self.path == "/v1/models":
+            payload = {"data": [{"id": "Qwen3-8B-FP8", "quantization": "FP8"}]}
+        elif self.path == "/metrics":
+            body = (
+                b"vllm:num_requests_running 2\n"
+                b"vllm:num_requests_waiting 1\n"
+                b"vllm:kv_cache_usage_perc 0.42\n"
+            )
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         else:
             self.send_error(404)
             return
@@ -62,6 +82,31 @@ class RuntimeProbeTests(unittest.TestCase):
         self.assertEqual(result["models"][0]["quantization"], "Q4_K_M")
         self.assertEqual(result["capacity"]["context_tokens"], 8192)
         self.assertEqual(result["security"]["auth_posture"], "unauthenticated_read")
+        self.assertEqual(result["adapter"]["id"], "ollama_native")
+        self.assertEqual(result["evidence_summary"]["loaded_model"], "qwen:test")
+
+    def test_llama_cpp_adapter_reports_model_slots_and_context(self):
+        item = self.service()
+        item["runtime"] = "llama.cpp"
+        item["process"]["command"] = "llama-server -m /models/qwen.Q5_K_M.gguf -c 16384"
+        result = RuntimeProbeCollector(cache_seconds=0).collect([item])[0]
+        self.assertEqual(result["adapter"]["id"], "llama_cpp_native")
+        self.assertEqual(result["adapter"]["evidence_quality"], "native")
+        self.assertEqual(result["models"][0]["name"], "qwen.Q5_K_M.gguf")
+        self.assertEqual(result["capacity"]["context_tokens"], 16384)
+        self.assertEqual(result["capacity"]["slots"], 2)
+        self.assertEqual(result["performance"]["requests_running"], 2)
+
+    def test_vllm_adapter_reports_scheduler_and_kv_cache_metrics(self):
+        item = self.service()
+        item["runtime"] = "vLLM"
+        item["process"]["command"] = "vllm serve Qwen3-8B-FP8 --max-num-seqs 8"
+        result = RuntimeProbeCollector(cache_seconds=0).collect([item])[0]
+        self.assertEqual(result["adapter"]["id"], "vllm_native")
+        self.assertEqual(result["models"][0]["name"], "Qwen3-8B-FP8")
+        self.assertEqual(result["performance"]["requests_running"], 2)
+        self.assertEqual(result["performance"]["requests_waiting"], 1)
+        self.assertEqual(result["performance"]["kv_cache_usage_percent"], 42.0)
 
     def test_command_config_never_returns_auth_value(self):
         service = self.service()

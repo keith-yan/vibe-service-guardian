@@ -41,6 +41,12 @@ class AppTests(unittest.TestCase):
         self.assertFalse(_health_is_vsg(payload, "instance-b"))
         self.assertFalse(_health_is_vsg({"ok": True}))
         self.assertFalse(_health_is_vsg({"ok": True, "version": "other", "instance_id": "x"}))
+        self.assertTrue(
+            _health_is_vsg(
+                {"ok": True, "version": "0.8.4", "instance_id": "x"},
+                require_current_version=False,
+            )
+        )
         self.assertFalse(_health_is_vsg({"ok": False, "version": __version__, "instance_id": "x"}))
 
     def test_runtime_file_round_trip(self):
@@ -52,6 +58,7 @@ class AppTests(unittest.TestCase):
             assert runtime is not None
             self.assertEqual(runtime["port"], 43210)
             self.assertEqual(runtime["instance_id"], "runtime-instance")
+            self.assertEqual(runtime["version"], __version__)
 
     def test_foreign_service_on_stale_runtime_port_is_not_opened(self):
         with tempfile.TemporaryDirectory() as directory:

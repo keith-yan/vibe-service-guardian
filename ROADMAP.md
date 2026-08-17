@@ -21,7 +21,7 @@ Exit criteria: all local automated gates pass; current-host portable path is reb
 
 Exit criteria: P0-specific tests and the full local gate pass; the Windows portable package is rebuilt and smoke-tested; no P1 feature or target-platform claim is silently included.
 
-## 0.8.5 — attribution evolution P2-A (current, unreleased)
+## 0.8.5 — attribution evolution P2-A (completed source milestone, unreleased)
 
 - Turn an explicit ownership correction into a deterministic local rule with instance, standard, or strict matching scope.
 - Keep the latest five auditable rule versions, deterministic conflict resolution, hit/override evidence, and a unique-service-episode correction rate.
@@ -29,6 +29,25 @@ Exit criteria: P0-specific tests and the full local gate pass; the Windows porta
 - Protect Agent/IDE-managed child processes through visible parent evidence and replace broad Docker inspection with a fixed metadata allowlist that excludes container environment variables.
 
 Exit criteria: schema-6 migration, conflict, rollback, rule-pack, Agent-child, and Docker-privacy tests pass; the full local gate and current-host portable package pass; no P2-B native-platform claim is included.
+
+## 0.8.5.1 — daily-use convergence (completed local milestone, unreleased)
+
+- Make an action-oriented Today's Focus view the default without removing the complete inventory or changing risk scores.
+- Enforce one VSG control-plane process per data directory with a crash-safe Windows/macOS/Linux OS lock and cross-version health identity checks.
+- Replace disabled stop affordances on protected/managed services with visible, display-only lifecycle guidance.
+- Promote native read-only Ollama, llama.cpp, and vLLM evidence, loaded-model identity, and measured concurrency headroom to the home view.
+
+Exit criteria: targeted and full local gates pass; a second-launch smoke proves port/PID reuse rather than adjacent-port fallback; the current-host UI is checked in both languages; other operating systems remain preview until 0.8.6 native acceptance.
+
+## 0.8.5.2 — P1 daily workflow closure (current local branch, unreleased)
+
+- Make the running version, PID, loopback port, uptime, and first-use readiness visible before the user acts.
+- Explain cross-version duplicate launches instead of silently opening an older instance, while keeping one control plane per data directory.
+- Build a project-level cleanup preview that preserves managed/protected guidance and routes every actionable item through the existing per-service `STOP <PID>` and observation flow.
+- Persist deduplicated warning/critical alerts and read state in the local timeline; recurring evidence becomes unread again without telemetry or cloud sync.
+- Provide an optional Windows native tray, default-off global hotkey, and explicitly confirmed current-user startup registration without installing a service or elevating privileges.
+
+Exit criteria: schema-7 migration and P1-specific tests pass; the full local gate passes; Chinese and English headless-browser checks cover the new entry points with no console errors; a fresh unsigned Windows portable archive passes native smoke and checksum validation. No startup entry or global hotkey is enabled during validation.
 
 ## 0.8.6 — managed-runtime evidence and native acceptance P2-B
 

@@ -127,7 +127,7 @@ try {
     $Health = Invoke-RestMethod -Uri ($BaseUrl + '/healthz') -TimeoutSec 3
     if (
         $Health.ok -ne $true -or
-        $Health.version -notmatch '^\d+\.\d+\.\d+$' -or
+        $Health.version -notmatch '^\d+\.\d+\.\d+(?:\.\d+)?$' -or
         -not $Health.instance_id
     ) {
         throw 'Health response is not a versioned VSG response.'

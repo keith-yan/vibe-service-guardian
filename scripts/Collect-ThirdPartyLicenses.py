@@ -43,22 +43,91 @@ def _distribution_license(distribution_name: str) -> tuple[str, str, bytes, str]
     return name, distribution.version, source.read_bytes(), source.name
 
 
-def _cpython_license() -> tuple[str, str, bytes, str]:
-    override = os.environ.get("VSG_PYTHON_LICENSE")
-    candidates = [Path(override).expanduser()] if override else []
-    candidates.extend(
-        [
-            Path(sys.base_prefix) / "LICENSE.txt",
-            Path(sys.prefix) / "LICENSE.txt",
-            Path(sys.executable).resolve().parent / "LICENSE.txt",
-        ]
-    )
+def _cpython_license_candidates(
+    *,
+    override: str | None = None,
+    base_prefix: Path | None = None,
+    prefix: Path | None = None,
+    executable: Path | None = None,
+    platform_name: str | None = None,
+    major_minor: str | None = None,
+    applications_root: Path | None = None,
+) -> list[Path]:
+    """Return bounded, deterministic license locations for this interpreter.
+
+    The python.org macOS installer deliberately keeps its composite license at
+    ``/Applications/Python X.Y/License.rtf`` instead of beside the framework
+    executable.  Keep that provider-specific location explicit rather than
+    recursively searching the host filesystem.
+    """
+
+    if override is None:
+        override = os.environ.get("VSG_PYTHON_LICENSE")
+    if base_prefix is None:
+        base_prefix = Path(sys.base_prefix)
+    if prefix is None:
+        prefix = Path(sys.prefix)
+    if executable is None:
+        executable = Path(sys.executable).resolve()
+    if platform_name is None:
+        platform_name = sys.platform
+    if major_minor is None:
+        major_minor = f"{sys.version_info.major}.{sys.version_info.minor}"
+    if applications_root is None:
+        applications_root = Path("/Applications")
+
+    candidates: list[Path] = []
+    if override:
+        candidates.append(Path(override).expanduser())
+
+    runtime_roots = (base_prefix, prefix, executable.parent)
+    for runtime_root in runtime_roots:
+        candidates.extend((runtime_root / "LICENSE.txt", runtime_root / "LICENSE"))
+
+    if platform_name == "darwin":
+        candidates.append(applications_root / f"Python {major_minor}" / "License.rtf")
+
+    unique: list[Path] = []
+    seen: set[str] = set()
     for candidate in candidates:
-        if candidate.is_file():
-            return "CPython", sys.version.split()[0], candidate.read_bytes(), candidate.name
-    raise RuntimeError(
-        "CPython LICENSE.txt was not found; set VSG_PYTHON_LICENSE to the local license path"
+        key = os.path.normcase(os.path.abspath(candidate))
+        if key not in seen:
+            seen.add(key)
+            unique.append(candidate)
+    return unique
+
+
+def _looks_like_cpython_license(content: bytes) -> bool:
+    normalized = content.lower()
+    return (
+        len(content) >= 1_000
+        and b"python software foundation license" in normalized
+        and b"license agreement" in normalized
     )
+
+
+def _select_cpython_license(
+    candidates: list[Path], version: str
+) -> tuple[str, str, bytes, str]:
+    for candidate in candidates:
+        if not candidate.is_file():
+            continue
+        try:
+            content = candidate.read_bytes()
+        except OSError:
+            continue
+        if _looks_like_cpython_license(content):
+            return "CPython", version, content, candidate.name
+    raise RuntimeError(
+        "CPython license was not found in the selected interpreter installation; "
+        "checked LICENSE.txt, LICENSE, and the official macOS "
+        "/Applications/Python X.Y/License.rtf location. Set VSG_PYTHON_LICENSE "
+        "to the exact local license path."
+    )
+
+
+def _cpython_license() -> tuple[str, str, bytes, str]:
+    return _select_cpython_license(_cpython_license_candidates(), sys.version.split()[0])
 
 
 def _timestamp() -> str:
@@ -70,9 +139,8 @@ def _timestamp() -> str:
     return moment.replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def collect(output: Path, sbom_path: Path, app_version: str) -> dict[str, object]:
-    output.mkdir(parents=True, exist_ok=True)
-    components = [
+def _components() -> list[tuple[str, str, bytes, str, str, str]]:
+    return [
         (*_cpython_license(), "NOASSERTION", "https://www.python.org/"),
         (*_distribution_license("psutil"), "BSD-3-Clause", "https://github.com/giampaolo/psutil"),
         (
@@ -81,6 +149,27 @@ def collect(output: Path, sbom_path: Path, app_version: str) -> dict[str, object
             "https://github.com/pyinstaller/pyinstaller",
         ),
     ]
+
+
+def verify_components() -> dict[str, object]:
+    components = _components()
+    return {
+        "ok": True,
+        "components": [
+            {
+                "component": name,
+                "version": version,
+                "license_file": original_name,
+                "sha256": hashlib.sha256(content).hexdigest(),
+            }
+            for name, version, content, original_name, _license_id, _project_url in components
+        ],
+    }
+
+
+def collect(output: Path, sbom_path: Path, app_version: str) -> dict[str, object]:
+    output.mkdir(parents=True, exist_ok=True)
+    components = _components()
 
     manifest_entries: list[dict[str, str]] = []
     packages: list[dict[str, object]] = []
@@ -200,10 +289,20 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Collect exact installed third-party license texts and generate an SPDX SBOM."
     )
-    parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--sbom", required=True, type=Path)
-    parser.add_argument("--app-version", required=True)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--sbom", type=Path)
+    parser.add_argument("--app-version")
+    parser.add_argument(
+        "--verify-only",
+        action="store_true",
+        help="Locate and validate every required license without writing package files.",
+    )
     args = parser.parse_args()
+    if args.verify_only:
+        print(json.dumps(verify_components(), ensure_ascii=False, indent=2))
+        return 0
+    if args.output is None or args.sbom is None or not args.app_version:
+        parser.error("--output, --sbom, and --app-version are required unless --verify-only is used")
     manifest = collect(args.output.resolve(), args.sbom.resolve(), args.app_version)
     print(json.dumps(manifest, ensure_ascii=False, indent=2))
     return 0
