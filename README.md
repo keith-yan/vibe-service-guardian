@@ -1,10 +1,10 @@
 # Vibe Service Guardian
 
-[GitHub](https://github.com/keith-yan/vibe-service-guardian) · [English](README.en.md) · [项目影响与证据](IMPACT.md) · [路线图](ROADMAP.md) · [维护者](MAINTAINERS.md) · [0.8.5.2 P1 日常工作流](docs/V0.8.5.2-P1-DAILY-WORKFLOW.md) · [0.8.5.1 日常收敛边界](docs/V0.8.5.1-DAILY-USE.md) · [0.8.5 P2-A 边界](docs/V0.8.5-P2-A.md) · [隐私](PRIVACY.md) · [安全](SECURITY.md) · [上线审查](docs/PRODUCTION-READINESS-0.8.5.2.md) · [本地验证记录](docs/VALIDATION.md)
+[GitHub](https://github.com/keith-yan/vibe-service-guardian) · [English](README.en.md) · [Alpha 1 发布说明](docs/RELEASE-NOTES-0.8.5.2-alpha.1.md) · [项目影响与证据](IMPACT.md) · [路线图](ROADMAP.md) · [维护者](MAINTAINERS.md) · [0.8.5.2 P1 日常工作流](docs/V0.8.5.2-P1-DAILY-WORKFLOW.md) · [0.8.5.1 日常收敛边界](docs/V0.8.5.1-DAILY-USE.md) · [0.8.5 P2-A 边界](docs/V0.8.5-P2-A.md) · [隐私](PRIVACY.md) · [安全](SECURITY.md) · [上线审查](docs/PRODUCTION-READINESS-0.8.5.2.md) · [本地验证记录](docs/VALIDATION.md)
 
 Vibe Service Guardian（服务守望）是面向 Windows、macOS 与 Linux Vibe Coding 场景的本机服务溯源、模型容量规划和推理优化工具。它一方面把“哪些进程正在监听端口”关联到“哪个项目、哪个 Agent/IDE/终端、是否可能已经遗留”；另一方面读取本机硬件，回答“最大能装什么开放权重模型、指定并发能否支撑、哪个推理引擎更匹配，以及出现 OOM/加速器错误后如何回验”。全部结果通过只监听回环地址、可切换中英文的本地 Web 图形控制台展示。
 
-当前源码版本为 **0.8.5.2（未发布）**。公开仓库 `main` 已包含 0.8.5 P2-A；0.8.5.1 与本轮 0.8.5.2 P1 仍只在本地功能分支开发，没有推送或发布。现有 Windows 本机结果与一次 macOS x86_64 VMware 自动预览验收，均不等同于完整 macOS/Linux 真机矩阵。
+当前公开源码版本为 **0.8.5.2**，预发布标识为 **`v0.8.5.2-alpha.1`（未签名 Alpha）**。公开仓库 `main` 已包含 0.8.5 P2-A、0.8.5.1 与 0.8.5.2 P1；最终下载资产是否已经上传，以 GitHub [Releases](https://github.com/keith-yan/vibe-service-guardian/releases) 页面为准。该标识不代表稳定版或完整跨平台支持：当前 Windows 主机已有候选验收证据，macOS x86_64 仅有一次受限 VMware 自动预览，Apple Silicon、实体 Intel Mac 与 Linux 仍待目标机验收。
 
 0.8.5.2 闭合启动辨识、按项目安全清理预览、本机持久提醒和 Windows 可选桌面入口四条高频工作流。首页显示实际运行版本/PID/端口/时长，项目计划没有批量停止 API，提醒只写本机 SQLite；托盘、快捷键和当前用户开机启动均默认关闭且不提权。完整边界见 [0.8.5.2 P1 日常工作流](docs/V0.8.5.2-P1-DAILY-WORKFLOW.md)。
 
