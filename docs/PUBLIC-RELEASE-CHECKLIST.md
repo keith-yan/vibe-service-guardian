@@ -5,17 +5,17 @@
 ## 首次 Alpha 与后续公开发布必须核对
 
 - [ ] 逐文件复核许可证、版权归属和第三方素材来源。
-- [ ] 运行 `python scripts/Audit-Public-Tree.py --root .`，确认没有数据库、日志、运行数据、密钥、私有路径或构建缓存。
-- [ ] 运行全部单元测试与依赖漏洞审计。
+- [x] 运行 `python scripts/Audit-Public-Tree.py --root .`，确认没有数据库、日志、运行数据、密钥、私有路径或构建缓存。
+- [x] 运行全部单元测试与依赖漏洞审计；本轮元数据修改的本地发布门禁已通过。合并后的最终 `main` CI 仍由后续未勾选步骤复核。
 - [ ] 在 Windows 10、Windows 11、Apple Silicon macOS、Intel macOS、Ubuntu/Linux x86_64 与 aarch64 图形桌面分别记录真实验收；无法获得的组合明确标为未验证。
 - [ ] 在真实 Hermes 与 OpenCode 中验证进程、项目、显式恢复会话和无目录元数据的降级行为。
 - [x] 由维护者选择 GitHub 用户名、公开仓库、维护策略和非秘密安全渠道；仓库使用 `keith-yan` 身份及 GitHub Private Vulnerability Reporting。
 - [x] 在 `MAINTAINERS.md` 填写与公开 GitHub 身份一致的核心维护者信息；已复核 `GOVERNANCE.md` 与 `ROADMAP.md`。
 - [x] 启用 GitHub Private Vulnerability Reporting，并确认 `SECURITY.md`、`SUPPORT.md` 与维护者清单指向同一私密入口。
-- [ ] 复核 `IMPACT.md` 与证据登记表：目标不得写成成就，本机报告不得写成独立采用；没有真实案例时保持“缺失”。
-- [ ] 初始化 Git 后检查首个提交内容；`release/`、`data/`、`.venv/`、`build/`、`dist/` 不应进入历史。
-- [ ] 推送后确认 CI 全绿，再创建无身份签名的预发布；为每个资产提供 SHA-256 与生成的 SBOM。
-- [ ] 使用 [`GITHUB-RELEASE-0.8.5.2-alpha.1.md`](GITHUB-RELEASE-0.8.5.2-alpha.1.md) 复核首个 Alpha 的公开说明，并确认标签、目标分支、预发布选项和实际上传资产完全一致。
+- [x] 复核 `IMPACT.md` 与证据登记表：目标没有写成成就，本机报告没有冒充独立采用，尚无真实案例的项目继续保持“缺失”。
+- [x] 检查公开 Git 历史与当前树；`release/`、`data/`、`.venv/`、`build/`、`dist/` 均不进入版本历史。
+- [ ] 本元数据提交合并后，确认新的最终 `main` CI 全绿并重新构建 6 个计划上传文件；每个文件必须使用精确白名单和同名 SHA-256。包含预构建 Windows EXE 的 ZIP 内含许可证清单与 SPDX SBOM；macOS 源码构建包在目标机生成二进制时生成对应许可证与 SBOM。
+- [ ] 基于新的最终 `main` 再使用 [`GITHUB-RELEASE-0.8.5.2-alpha.1.md`](GITHUB-RELEASE-0.8.5.2-alpha.1.md) 复核标签、目标提交、预发布/Latest 选项和 6 个上传文件；发布后还要回读线上实际结果。
 
 ## OpenAI Codex for OSS 的官方条件
 

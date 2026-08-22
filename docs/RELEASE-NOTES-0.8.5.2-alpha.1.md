@@ -1,6 +1,6 @@
 # Vibe Service Guardian v0.8.5.2-alpha.1 发布说明 / Release Notes
 
-- 发布日期 / Release date: 2026-08-17
+- 发布日期 / Release date: 2026-08-23
 - 程序版本 / Runtime version: `0.8.5.2`
 - 预发布标签 / Prerelease tag: `v0.8.5.2-alpha.1`
 
