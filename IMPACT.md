@@ -1,6 +1,6 @@
 # Project impact and evidence / 项目影响与证据
 
-> Status: newly public repository, unreleased Alpha. This document separates verified engineering evidence, local self-reported outcomes, and independent public adoption. Repository existence is verified; independent adoption does not exist yet.
+> Status: newly public repository with one published unsigned Alpha prerelease. This document separates verified engineering evidence, local self-reported outcomes, public attention, and independent adoption. Repository/release existence and early GitHub interest are verified; independent adoption is not.
 
 ## Why this project exists / 为什么要做
 
@@ -26,7 +26,18 @@ Vibe Service Guardian turns those questions into a local evidence chain: detect 
 | E1 — Engineering verification | The implementation follows bounded control, privacy, migration, and protocol contracts | Available; see `docs/VALIDATION.md` and `docs/EVIDENCE-REGISTER.md` | Real-world adoption or user value |
 | E2 — Local self-reported outcomes | One VSG instance recorded whether flagged services were actually stale and whether stop/benchmark verification completed | Supported by the local impact report; no automatic upload | Independent user count or community impact |
 | E3 — Independent case evidence | A consenting external user describes the before/after result with reproducible, redacted evidence | Not yet available | Broad adoption unless the sample and method justify it |
-| E4 — Public ecosystem evidence | Public releases, unique contributors, issue/PR response, downloads, dependent projects, citations | Repository created at [`keith-yan/vibe-service-guardian`](https://github.com/keith-yan/vibe-service-guardian); no release or adoption evidence yet | Repository existence proves publication/control, not adoption or ecosystem importance |
+| E4 — Public ecosystem evidence | Public releases, unique contributors, issue/PR response, downloads, dependent projects, citations | Public repository plus [`v0.8.5.2-alpha.1`](https://github.com/keith-yan/vibe-service-guardian/releases/tag/v0.8.5.2-alpha.1); 112 Stars at the dated snapshot below | A release, Stars, maintainer PRs, or maintainer verification downloads do not prove users, installations, independent adoption, or ecosystem importance |
+
+## Public repository snapshot / 公开仓库快照（2026-08-23 00:43 UTC+8）
+
+This snapshot was read from GitHub after the first Alpha was published. It is a dated observation, not a live counter or a user estimate.
+
+- Public MIT repository created 2026-08-14; 112 Stars, 0 Forks, and 1 subscriber.
+- 11 commits on `main`; 14 pull requests in total, including 8 merged maintainer PRs and 6 closed-unmerged Dependabot PRs; 0 open PRs.
+- One contributor is reported: [`keith-yan`](https://github.com/keith-yan), the sole primary maintainer. This is not an independent contributor.
+- 0 public Issues and no public issue-response history.
+- One published checksum-backed prerelease, [`v0.8.5.2-alpha.1`](https://github.com/keith-yan/vibe-service-guardian/releases/tag/v0.8.5.2-alpha.1), with 6 uploaded files. GitHub reported 0 asset downloads at collection time.
+- Maintainer release verification included authenticated digest comparison and anonymous download checks. Any later download counter can include maintainer verification, bots, repeat downloads, and sidecar downloads, so it must not be translated into users or installations.
 
 ## Local impact report / 本机成效报告
 
@@ -59,16 +70,16 @@ The report deliberately states `external_adoption_verified: false`. Removing or 
 - SQLite migrations are versioned, backed up, transactionally applied, and corruption-tested.
 - Security, privacy, public-tree, dependency, and cross-platform build contracts are documented and automated where the current Windows host can validate them.
 - A local outcome/export path now exists so future users can produce redacted, reviewable evidence instead of anecdotal claims.
-- The public GitHub repository exists at [`keith-yan/vibe-service-guardian`](https://github.com/keith-yan/vibe-service-guardian); its initial publication is repository-control evidence only.
+- The public repository and first unsigned Alpha exist at [`keith-yan/vibe-service-guardian`](https://github.com/keith-yan/vibe-service-guardian) and [`v0.8.5.2-alpha.1`](https://github.com/keith-yan/vibe-service-guardian/releases/tag/v0.8.5.2-alpha.1). The release has 6 allowlisted assets, matching remote SHA-256 digests, a Windows SPDX SBOM, explicit platform limitations, and no Linux binary claim.
 
-This is maintenance and product-readiness evidence. It is not evidence of public popularity.
+This is maintenance, release-integrity, and early-interest evidence. It is not evidence of independent adoption or broad public use.
 
 ## Evidence still missing / 尚缺证据
 
-- At initial publication there is no public release, verified download/user evidence, dependent project, citation, or independent contributor; repository counters must not be interpreted as adoption without context.
+- No verified external user, installation, independently attributable download, dependent project, citation, or independent contributor. GitHub counters must not be interpreted as adoption without context.
 - No consented external case study or independently verified user outcome.
 - No native Apple Silicon, Intel macOS, Linux x86_64, or Linux arm64 acceptance result from this Windows workspace.
-- No public issue/PR response history or sustained release cadence.
+- No public issue-response history and only one prerelease; a sustained release/maintenance cadence is not yet established.
 
 ## How to add a real case / 如何补充真实案例
 
