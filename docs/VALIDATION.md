@@ -2,6 +2,14 @@
 
 本文保留 Vibe Service Guardian 0.4.0–0.8.5.1 的既有验证证据，并追加 0.8.5.2 P1 日常工作流及受限 macOS x86_64 VMware 预览的可复核结果。以下 0.8.5.2 验证轮次执行时没有提交、推送、发布 Release 或提交 OpenAI 申请；后续 Git 合并不改变这些目标环境证据的范围或结论。
 
+## 0.8.5.2 依赖与 CI 维护验收（2026-08-22）
+
+- Windows、macOS 与 Linux 的直接构建依赖统一从 PyInstaller `6.22.0` 更新到 `6.22.2`。项目生成器从公开 PyPI 重新解析全部 20 个 Wheel-only SHA-256 锁目标并刷新 `requirements-lock/manifest.json`；连续第二次生成的所有文件哈希完全一致，随后离线完整性验证通过。
+- 审计工具传递依赖同步更新 Pygments `2.20.0→2.21.0`、charset-normalizer `3.5.0→3.5.1`、idna `3.18→3.19` 与 stevedore `5.9.0→5.9.1`。Ruff、Bandit 中/高风险门禁、四组 `pip-audit`、`pip check`、Python 字节码编译、两个前端 JavaScript 语法检查、YAML 解析、公开树审计和 `git diff --check` 均通过；该漏洞结论只代表 2026-08-22 当次数据库。
+- 完整 unittest 共 243 项：242 通过，1 项因 Windows 不适用 POSIX mode-bit 断言而跳过。Windows 11 / CPython 3.12.10 使用 PyInstaller `6.22.2` 生成未签名 EXE，并通过仅回环监听、Host/Origin/错误令牌拒绝、CSP、离线模型规划、空历史门禁和优雅关停 smoke；ZIP 共 47 个条目、无运行数据，许可证清单和 SPDX 2.3 SBOM 中的 PyInstaller 版本为 `6.22.2`。
+- macOS r9 ZIP/tar.gz 与 Linux ZIP 源码构建包通过单根目录、路径安全、运行数据排除、公开树和 SHA-256 验证；macOS tar 保留必需脚本可执行位。它们由 Windows 主机生成，只证明构建包完整性，不能替代 macOS/Linux 目标系统的原生二进制、桌面或硬件验收。
+- Dependabot 的 pip 配置排除 `requirements-lock/**`，避免机器人单独修改生成锁而绕过 manifest；直接依赖更新仍需维护者运行 `scripts/Requirement-Locks.py --generate` 并提交完整锁集。本轮没有推送、合并、关闭现有 Dependabot PR、创建 Release 或更改远程仓库设置。
+
 ## 0.8.5.2 P1 日常工作流验收（2026-08-16）
 
 - 首页固定展示实际运行版本、PID、回环端口与运行时长，并提供首次使用检查、提醒中心、项目安全清理和安全退出入口。跨版本重复启动只记录请求/运行版本、PID、端口、时间和动作，不记录数据目录或控制令牌。

@@ -18,7 +18,7 @@ The precise Python version and complete composite license are collected from the
 
 Copyright (c) 2009, Jay Loden, Dave Daeschler, Giampaolo Rodola. Redistribution and use in source and binary forms, with or without modification, are permitted under the conditions stated in the upstream BSD 3-Clause license. The portable build contains the complete text copied from the installed `psutil` distribution.
 
-## PyInstaller 6.22.0
+## PyInstaller 6.22.2
 
 - Project: <https://github.com/pyinstaller/pyinstaller>
 - License: GPL-2.0-or-later with a special exception for distributing bundled applications
