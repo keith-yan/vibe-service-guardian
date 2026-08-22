@@ -2,6 +2,10 @@ version: 2
 updates:
   - package-ecosystem: pip
     directory: "/"
+    # requirements-lock/ is generated together with its integrity manifest.
+    # Direct edits bypass that contract and are rejected by CI.
+    exclude-paths:
+      - "requirements-lock/**"
     schedule:
       interval: weekly
     open-pull-requests-limit: 5

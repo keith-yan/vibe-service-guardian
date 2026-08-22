@@ -17,6 +17,11 @@
 - macOS 构建包验收脚本升级为 r9：测试服务使用动态回环端口并持久化最近收尾状态；证据封装前等待日志写入完成，排除 AppleDouble 资源文件，并记录测试服务与 VSG 的独立退出证明。
 - Windows 打包改用独立暂存目录；若同版本旧解压目录仍在运行，构建会保留其进程与数据库，只生成并验证新的便携 ZIP，不再为覆盖目录而要求强制退出旧实例。
 
+### Release engineering
+
+- 将 Windows、macOS 与 Linux 的 PyInstaller 构建依赖统一更新到 `6.22.2`，并使用公开 PyPI 重新生成全部 20 份 Wheel-only SHA-256 锁及完整性 manifest。
+- 审计工具锁同步更新 Pygments `2.21.0`、charset-normalizer `3.5.1`、idna `3.19` 与 stevedore `5.9.1`；Dependabot 不再直接修改 `requirements-lock/` 生成目录，依赖 PR 必须通过项目生成器刷新完整锁集。
+
 ### Boundary
 
 - 所有桌面集成默认关闭；本轮构建和测试不会修改维护者机器的开机启动项或注册全局快捷键。0.8.5.2 r8 已在 macOS 13.7.8 x86_64 AMD/VMware 客体完成一次自动原生预览验收，但人工界面证据不完整，且 r9 证据脚本仍待该目标环境复验；它不能替代实体 Intel Mac、Apple Silicon、Linux 或硬件传感器验收。macOS/Linux 托盘与完整原生矩阵仍属于 0.8.6 P2-B。

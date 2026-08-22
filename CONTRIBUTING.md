@@ -18,6 +18,17 @@ python scripts/Audit-Public-Tree.py --root .
 
 Windows 使用 `.venv\Scripts\python.exe`，macOS/Linux 使用 `.venv/bin/python3`。
 
+## 依赖更新与锁文件
+
+`requirements-lock/` 由 `scripts/Requirement-Locks.py` 连同完整性清单统一生成，禁止手工修改单个锁文件。Dependabot 会检查根目录中的直接依赖声明，但会忽略生成目录；收到依赖更新后，维护者必须从仓库根目录执行：
+
+```text
+python scripts/Requirement-Locks.py --generate
+python scripts/Requirement-Locks.py --verify
+```
+
+生成过程仅使用公开 PyPI、只接受 Wheel 和 SHA-256，并会刷新所有目标平台/Python 版本的锁文件及 `requirements-lock/manifest.json`。PR 必须同时提交源依赖、受影响的全部锁文件和 manifest，随后运行完整测试与对应平台打包验证。
+
 ## 提交要求
 
 - 一个改动解决一个明确问题，并补充失败前、修复后都能解释的测试。
