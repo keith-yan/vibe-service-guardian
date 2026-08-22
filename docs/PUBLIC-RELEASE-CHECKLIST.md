@@ -14,8 +14,8 @@
 - [x] 启用 GitHub Private Vulnerability Reporting，并确认 `SECURITY.md`、`SUPPORT.md` 与维护者清单指向同一私密入口。
 - [x] 复核 `IMPACT.md` 与证据登记表：目标没有写成成就，本机报告没有冒充独立采用，尚无真实案例的项目继续保持“缺失”。
 - [x] 检查公开 Git 历史与当前树；`release/`、`data/`、`.venv/`、`build/`、`dist/` 均不进入版本历史。
-- [ ] 本元数据提交合并后，确认新的最终 `main` CI 全绿并重新构建 6 个计划上传文件；每个文件必须使用精确白名单和同名 SHA-256。包含预构建 Windows EXE 的 ZIP 内含许可证清单与 SPDX SBOM；macOS 源码构建包在目标机生成二进制时生成对应许可证与 SBOM。
-- [ ] 基于新的最终 `main` 再使用 [`GITHUB-RELEASE-0.8.5.2-alpha.1.md`](GITHUB-RELEASE-0.8.5.2-alpha.1.md) 复核标签、目标提交、预发布/Latest 选项和 6 个上传文件；发布后还要回读线上实际结果。
+- [x] 元数据提交合并后，最终 `main@0093355` 的 10 项 CI 全绿并重新构建 6 个计划上传文件；每个文件使用精确白名单和同名 SHA-256。包含预构建 Windows EXE 的 ZIP 内含许可证清单与 SPDX SBOM；macOS 源码构建包在目标机生成二进制时生成对应许可证与 SBOM。
+- [x] 基于最终 `main@0093355` 使用 [`GITHUB-RELEASE-0.8.5.2-alpha.1.md`](GITHUB-RELEASE-0.8.5.2-alpha.1.md) 复核并发布 [`v0.8.5.2-alpha.1`](https://github.com/keith-yan/vibe-service-guardian/releases/tag/v0.8.5.2-alpha.1)：`Prerelease=true`、`Latest=false`、6 个远程资产摘要匹配、Linux 包未上传；已通过匿名公开页面和匿名下载回读。
 
 ## OpenAI Codex for OSS 的官方条件
 
@@ -31,7 +31,7 @@
 
 ## 当前项目的客观缺口
 
-本地代码质量文件不能替代公开维护证据。项目现已建立公开仓库并形成可核验的 PR 合并记录，但在首个 Alpha 准备阶段仍没有可归因的 Release 下载量、持续 Issue/PR 处理周期或独立社区采用证据；这仍是申请竞争力的实质缺口，不能通过填写文案修复。建议完成公开预发布和数轮真实维护后，再以可验证数据说明价值。
+本地代码质量文件不能替代公开维护证据。项目现已建立公开仓库、可核验的 PR 合并记录和一个带校验资产的 Alpha prerelease；截至 2026-08-23 00:43（UTC+8），GitHub API记录资产下载为 0。项目仍没有可归因的外部用户、安装、独立贡献者、持续 Issue/PR 处理周期或独立社区采用证据；这仍是申请竞争力的实质缺口，不能通过填写文案修复。后续只能用带日期、来源和限制的真实维护数据逐步补足。
 
 当前代码已经提供显式、脱敏、按服务指纹去重的本机成效报告，但它只解决“如何以后收集自报结果”，不等于现在已经拥有外部用户证据。至少应再获得经同意的独立案例，并按 `docs/case-studies/README.md` 记录证据等级、测量窗口、分母和限制。
 

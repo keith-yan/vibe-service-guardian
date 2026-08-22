@@ -13,13 +13,15 @@ This register prevents code verification from being misrepresented as user adopt
 | VSG-E007 | Native platform preview | macOS 13.7.8 x86_64 VMware guest can build the native package and pass automated native validation | [`case-studies/macos-vm-preview-0.8.5.2.md`](case-studies/macos-vm-preview-0.8.5.2.md) | Partial | AMD-hosted VM; manual UI evidence and r9 target rerun are incomplete; does not cover physical Intel Mac or Apple Silicon |
 | VSG-E008 | Native platform | Linux x86_64 and arm64 graphical acceptance | `LINUX-VALIDATION.md` | Missing | Must run on real target machines |
 | VSG-E009 | Independent outcome | External user case study with consent and redacted evidence | `docs/case-studies/` | Missing | Cannot be replaced by maintainer testing |
-| VSG-E010 | Public ecosystem | Public releases, contributors, issues/PRs, downloads, dependents, citations | [`keith-yan/vibe-service-guardian`](https://github.com/keith-yan/vibe-service-guardian) | Partial | Repository existence proves publication/control only; no release or adoption evidence yet |
+| VSG-E010 | Public ecosystem | Dated public counters and maintainer activity exist | [`keith-yan/vibe-service-guardian`](https://github.com/keith-yan/vibe-service-guardian), [`IMPACT.md`](../IMPACT.md) | Partial | 112 Stars, maintainer PRs, one maintainer contributor, and GitHub counters show attention/activity, not users, installations, independent adoption, or ecosystem importance |
 | VSG-E011 | Engineering | P1 project cleanup remains per-service, local alerts migrate safely, and optional Windows desktop integration defaults off | `tests/test_v0852_p1.py`, `docs/VALIDATION.md` | Available | Current Windows host and synthetic/local evidence; no long-term user or native macOS/Linux result |
+| VSG-E012 | Public release integrity | The first unsigned Alpha is published from the reviewed tag with 6 allowlisted assets, remote SHA-256 digests, explicit prerelease status, and no Linux binary | [`v0.8.5.2-alpha.1`](https://github.com/keith-yan/vibe-service-guardian/releases/tag/v0.8.5.2-alpha.1), `docs/RELEASE-NOTES-0.8.5.2-alpha.1.md` | Available | Maintainer-controlled publication and integrity verification; does not prove an external download, successful installation, real-world use, or independent security review |
 
 ## Rules
 
 - “Available” means the linked artifact exists and its stated validation ran; it does not widen the claim beyond the limitation column.
 - “Partial” means a source exists but supports only the explicitly stated subset of a broader claim.
 - External quotes, usage counts, and case studies require source URL or written consent, collection date, and denominator.
+- GitHub Stars are public attention, not users. Asset download counters can include the maintainer, bots, repeated downloads, and checksum sidecars; record collection time and never convert them to unique users or installations.
 - Never add raw `data/`, SQLite databases, logs, paths, IP addresses, credentials, session IDs, or model responses.
 - If evidence becomes stale or invalid, mark it superseded/invalidated; do not silently delete the history after publication.
