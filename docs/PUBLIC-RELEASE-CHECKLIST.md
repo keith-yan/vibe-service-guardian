@@ -9,8 +9,9 @@
 - [ ] 运行全部单元测试与依赖漏洞审计。
 - [ ] 在 Windows 10、Windows 11、Apple Silicon macOS、Intel macOS、Ubuntu/Linux x86_64 与 aarch64 图形桌面分别记录真实验收；无法获得的组合明确标为未验证。
 - [ ] 在真实 Hermes 与 OpenCode 中验证进程、项目、显式恢复会话和无目录元数据的降级行为。
-- [ ] 由维护者选择 GitHub 用户名/组织、仓库名、公开安全联系方式和维护策略。
-- [ ] 在 `MAINTAINERS.md` 填写与公开 GitHub 身份一致的核心维护者信息；复核 `GOVERNANCE.md` 与 `ROADMAP.md`。
+- [x] 由维护者选择 GitHub 用户名、公开仓库、维护策略和非秘密安全渠道；仓库使用 `keith-yan` 身份及 GitHub Private Vulnerability Reporting。
+- [x] 在 `MAINTAINERS.md` 填写与公开 GitHub 身份一致的核心维护者信息；已复核 `GOVERNANCE.md` 与 `ROADMAP.md`。
+- [x] 启用 GitHub Private Vulnerability Reporting，并确认 `SECURITY.md`、`SUPPORT.md` 与维护者清单指向同一私密入口。
 - [ ] 复核 `IMPACT.md` 与证据登记表：目标不得写成成就，本机报告不得写成独立采用；没有真实案例时保持“缺失”。
 - [ ] 初始化 Git 后检查首个提交内容；`release/`、`data/`、`.venv/`、`build/`、`dist/` 不应进入历史。
 - [ ] 推送后确认 CI 全绿，再创建无身份签名的预发布；为每个资产提供 SHA-256 与生成的 SBOM。

@@ -118,6 +118,6 @@ POSIX 数据目录尽力使用 `0700`，配置、数据库、日志和运行实�
 
 ## 报告漏洞
 
-公开仓库启用 GitHub Private Vulnerability Reporting 后，请优先使用该渠道，并提供最小复现、受影响版本、平台和已脱敏证据。不要在公开 Issue 中披露可利用细节、密钥、本机数据库或会话文件。
+仓库已启用 GitHub Private Vulnerability Reporting。疑似安全漏洞请通过[私密报告入口](https://github.com/keith-yan/vibe-service-guardian/security/advisories/new)提交，并提供最小复现、受影响版本、平台、影响说明和已脱敏证据。
 
-仓库尚未启用私密报告时，可以创建不含漏洞细节的公开 Issue，请求维护者提供私密联系方式。维护者在正式公开仓库前仍需补充可验证的安全联系人；当前文件不能代替该人工决定。
+不要在公开 Issue、Discussion 或 PR 中披露可利用细节、密钥、本机数据库、原始日志、绝对路径或 Agent 会话文件。无法访问私密入口时，只能公开说明“需要私密安全联系方式”，不得附带漏洞细节；仓库目前不公布维护者私人邮箱，也不承诺固定响应时限。

@@ -10,7 +10,7 @@ This file uses only the maintainer's chosen public GitHub identity. It does not 
 |---|---|
 | Primary/core maintainer | [`keith-yan`](https://github.com/keith-yan) |
 | Release authority | `keith-yan` only |
-| Security contact | Not yet public; use GitHub Private Vulnerability Reporting after it is enabled |
+| Security contact | [GitHub Private Vulnerability Reporting](https://github.com/keith-yan/vibe-service-guardian/security/advisories/new) |
 | Backup maintainer | None |
 | Bus factor | 1 |
 
@@ -30,7 +30,7 @@ A contributor may be invited as a maintainer only after sustained, reviewable co
 ## Public repository follow-up
 
 - [x] Add the maintainer’s chosen public name/handle and GitHub profile URL.
-- [ ] Add a non-secret public contact or enable GitHub Private Vulnerability Reporting.
+- [x] Enable GitHub Private Vulnerability Reporting as the non-secret public security channel.
 - [x] Record that the personal account `keith-yan` owns releases and security advisories.
 - [ ] Identify a backup maintainer or explicitly accept the bus-factor-one risk.
 

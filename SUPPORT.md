@@ -17,4 +17,6 @@
 - 对 Agent 未公开内部格式的持续兼容；
 - 未经实机验证的平台组合。
 
-安全漏洞请遵循 [SECURITY.md](SECURITY.md)，不要公开利用细节。
+## 安全漏洞
+
+不要通过公开 Issue 报告安全漏洞。请先阅读 [SECURITY.md](SECURITY.md)，再使用 [GitHub Private Vulnerability Reporting](https://github.com/keith-yan/vibe-service-guardian/security/advisories/new) 私密提交；不得附带未脱敏日志、数据库、路径、账号信息或凭据。
